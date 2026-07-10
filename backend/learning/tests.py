@@ -324,6 +324,40 @@ class LlmTests(ApiBase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.data['accepted'])
         self.assertEqual(response.data['score'], 6)
+        self.assertTrue(response.data['review_recorded'])
+
+    @patch('learning.services.llm._post', new_callable=AsyncMock)
+    def test_judge_records_review_and_reschedules_in_same_request(self, post):
+        card = self.card()
+        post.return_value = {'content': json.dumps({'score':6,'verdict':'correct','feedback':'Good.','matched_concepts':[],'missing_or_wrong_concepts':[]}), 'stats': {'total_price':0}, 'elapsed_time':0.1}
+        response = self.client.post(
+            f'/api/study/{card.id}/judge/',
+            {'answer': 'being very careful', 'direction': 'term_to_definition', 'response_ms': 4000},
+            format='json',
+        )
+        self.assertTrue(response.data['review_recorded'])
+        log = ReviewLog.objects.get()
+        self.assertEqual(log.judge_score, 6)
+        self.assertEqual(log.response_ms, 4000)
+        self.assertTrue(log.accepted)
+        card.schedule.refresh_from_db()
+        self.assertNotEqual(card.schedule.state, CardSchedule.State.NEW)
+        self.assertEqual(response.data['review']['schedule']['state'], card.schedule.state)
+
+    def test_binary_judge_records_review_and_practice_leaves_schedule_alone(self):
+        card = self.card('abolish')
+        response = self.client.post(
+            f'/api/study/{card.id}/judge/',
+            {'answer': 'abolish', 'direction': 'definition_to_term', 'practice': True, 'response_ms': 2500},
+            format='json',
+        )
+        self.assertTrue(response.data['review_recorded'])
+        log = ReviewLog.objects.get()
+        self.assertTrue(log.accepted)
+        self.assertEqual(log.response_ms, 2500)
+        card.schedule.refresh_from_db()
+        self.assertEqual(card.schedule.state, CardSchedule.State.NEW)
+        self.assertIsNone(card.schedule.last_reviewed_at)
 
     def test_definition_to_term_is_local_and_accepts_alias(self):
         card = self.card('take for granted')
@@ -550,6 +584,22 @@ class SchedulerTests(ApiBase):
         self.assertEqual(response.data['due_now'], 7)
         next_response = self.client.get('/api/study/next/')
         self.assertEqual(next_response.data['queue_count'], 7)
+
+    def test_study_next_reports_queue_breakdown_by_state(self):
+        for index in range(3):
+            self.card(f'newword{index}')
+        learning = self.card('learningword')
+        learning.schedule.state = CardSchedule.State.LEARNING
+        learning.schedule.due_at = timezone.now() - timedelta(minutes=5)
+        learning.schedule.save()
+        review = self.card('reviewword')
+        review.schedule.state = CardSchedule.State.REVIEW
+        review.schedule.due_at = timezone.now() - timedelta(hours=1)
+        review.schedule.save()
+        response = self.client.get(f'/api/study/next/?pool={self.pool.id}')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['queue_breakdown'], {'new': 3, 'learning': 1, 'review': 1})
+        self.assertEqual(response.data['queue_count'], 5)
 
     def test_overview_activity_aggregates_reviews_per_day(self):
         card = self.card()

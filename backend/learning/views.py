@@ -352,7 +352,19 @@ class NextCardView(APIView):
             return Response({
                 'card': None, 'mode': mode, 'message': 'Nothing is due. You are caught up.',
                 'queue_count': 0, 'round_total': 0, 'round_completed': 0,
+                'queue_breakdown': {'new': 0, 'learning': 0, 'review': 0},
             })
+        # What the remaining queue consists of, so the Study page can explain
+        # why the round grows when a failed card re-enters a learning step.
+        breakdown = {'new': 0, 'learning': 0, 'review': 0}
+        for candidate in cards:
+            state = candidate.schedule.state
+            if state == CardSchedule.State.NEW:
+                breakdown['new'] += 1
+            elif state == CardSchedule.State.REVIEW:
+                breakdown['review'] += 1
+            else:
+                breakdown['learning'] += 1
         rank = {CardSchedule.State.RELEARNING: 4, CardSchedule.State.LEARNING: 3, CardSchedule.State.REVIEW: 2, CardSchedule.State.NEW: 1}
         card = max(cards, key=lambda c: (rank.get(c.schedule.state, 0), priority(c.schedule, now)))
         direction = _direction(profile, card)
@@ -361,6 +373,7 @@ class NextCardView(APIView):
         return Response({
             'card': payload, 'direction': direction, 'prompt': prompt, 'mode': mode,
             'queue_count': len(cards),
+            'queue_breakdown': breakdown,
         })
 
 
@@ -382,6 +395,86 @@ def _recall_key(value, *, strip_infinitive: bool) -> str:
     return normalized
 
 
+def _parse_response_ms(value):
+    try:
+        return max(0, min(int(value or 0), 60 * 60 * 1000))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _parse_bool(value):
+    return value if isinstance(value, bool) else str(value or '').lower() in {'1', 'true', 'yes'}
+
+
+def _parse_hints(data):
+    try:
+        return max(0, int(data.get('hint_revealed_letters') or 0)), max(0, int(data.get('hint_total_letters') or 0))
+    except (TypeError, ValueError):
+        return 0, 0
+
+
+def _record_review(user, card_id, *, direction, answer, accepted, judge_score=None,
+                   judge_verdict='', feedback='', response_ms=0, practice=False,
+                   hint_revealed_letters=0, hint_total_letters=0):
+    """Persist one review atomically and reschedule the card. Raises DatabaseError
+    on lock contention so callers decide between 409 and a soft fallback."""
+    with transaction.atomic():
+        # Never let a duplicate browser shortcut or a stuck transaction make
+        # the Study page wait indefinitely. PostgreSQL raises quickly, the
+        # frontend can retry, and the user sees a real error instead of a hang.
+        if connection.vendor == 'postgresql':
+            with connection.cursor() as cursor:
+                cursor.execute("SET LOCAL lock_timeout = %s", ["2500ms"])
+                cursor.execute("SET LOCAL statement_timeout = %s", ["15000ms"])
+
+        # Lock the card and schedule in separate queries. The reverse
+        # one-to-one relation is represented by a nullable outer join in
+        # select_related(). PostgreSQL rejects FOR UPDATE there.
+        card = Flashcard.objects.select_for_update().filter(id=card_id, pool__user=user).first()
+        if not card:
+            return None
+        schedule, _ = CardSchedule.objects.select_for_update().get_or_create(card=card)
+
+        profile = profile_for(user)
+        rating = automatic_rating(
+            accepted=accepted,
+            response_ms=response_ms,
+            direction=direction,
+            judge_score=judge_score,
+            profile=profile,
+            hint_revealed_letters=hint_revealed_letters,
+            hint_total_letters=hint_total_letters,
+        )
+        previous_state, previous_interval = schedule.state, schedule.interval_days
+        if not practice:
+            apply_rating(schedule, rating, profile)
+        ReviewLog.objects.create(
+            user=user, card=card,
+            direction=direction,
+            answer=answer,
+            judge_score=judge_score,
+            judge_verdict=judge_verdict,
+            feedback=feedback,
+            accepted=accepted,
+            rating=rating, previous_state=previous_state, new_state=schedule.state,
+            previous_interval_days=previous_interval, new_interval_days=schedule.interval_days,
+            response_ms=response_ms,
+            hint_revealed_letters=hint_revealed_letters,
+            hint_total_letters=hint_total_letters,
+        )
+        return {
+            'schedule': {
+                'state': schedule.state, 'due_at': schedule.due_at,
+                'interval_days': schedule.interval_days,
+                'ease_factor': schedule.ease_factor, 'repetitions': schedule.repetitions,
+                'lapses': schedule.lapses,
+            },
+            'practice': practice,
+            'automatic_rating': rating,
+            'automatic_rating_label': ReviewLog.Rating(rating).label,
+        }
+
+
 class JudgeView(APIView):
     def post(self, request, card_id):
         card = Flashcard.objects.filter(id=card_id, pool__user=request.user).select_related('pool').first()
@@ -401,111 +494,79 @@ class JudgeView(APIView):
             candidates.discard('')
             accepted = answer_norm in candidates
             score = 7 if accepted else 1
-            return Response({
+            judged = {
                 'grading': 'binary',
                 'score': score, 'verdict': 'correct' if accepted else 'wrong',
                 'feedback': 'Correct.' if accepted else f'The expected answer is “{card.term}”.',
                 'matched_concepts': [card.term] if accepted else [],
                 'missing_or_wrong_concepts': [] if accepted else [card.term],
                 'accepted': accepted, 'should_reveal': not accepted,
-            })
-        judged = judge_definition(user=request.user, profile=profile_for(request.user), card=card, answer=answer)
-        judged['grading'] = 'ordinal'
+            }
+        else:
+            judged = judge_definition(user=request.user, profile=profile_for(request.user), card=card, answer=answer)
+            judged['grading'] = 'ordinal'
+
+        # The backend already has the answer and the verdict, so persist the
+        # review in the same request. The frontend keeps a fallback save path
+        # in case this soft attempt loses a lock race.
+        hint_revealed_letters, hint_total_letters = _parse_hints(request.data)
+        try:
+            review = _record_review(
+                request.user, card.id,
+                direction=direction, answer=answer,
+                accepted=judged['accepted'], judge_score=judged['score'],
+                judge_verdict=judged['verdict'], feedback=judged['feedback'],
+                response_ms=_parse_response_ms(request.data.get('response_ms')),
+                practice=_parse_bool(request.data.get('practice')),
+                hint_revealed_letters=hint_revealed_letters,
+                hint_total_letters=hint_total_letters,
+            )
+        except DatabaseError:
+            review = None
+        judged['review_recorded'] = review is not None
+        judged['review'] = review
         return Response(judged)
 
 
 class ReviewView(APIView):
     def post(self, request, card_id):
+        direction = request.data.get('direction', ReviewLog.Direction.TERM_TO_DEFINITION)
+        if direction not in {
+            ReviewLog.Direction.TERM_TO_DEFINITION,
+            ReviewLog.Direction.DEFINITION_TO_TERM,
+        }:
+            return Response({'direction': ['Invalid study direction.']}, status=400)
+        accepted_value = request.data.get('accepted', False)
+        raw_judge_score = request.data.get('judge_score')
         try:
-            with transaction.atomic():
-                # Never let a duplicate browser shortcut or a stuck transaction make
-                # the Study page wait indefinitely. PostgreSQL raises quickly, the
-                # frontend can retry, and the user sees a real error instead of a hang.
-                if connection.vendor == 'postgresql':
-                    with connection.cursor() as cursor:
-                        cursor.execute("SET LOCAL lock_timeout = %s", ["2500ms"])
-                        cursor.execute("SET LOCAL statement_timeout = %s", ["15000ms"])
-
-                # Lock the card and schedule in separate queries. The reverse
-                # one-to-one relation is represented by a nullable outer join in
-                # select_related(). PostgreSQL rejects FOR UPDATE there.
-                card = Flashcard.objects.select_for_update().filter(
-                    id=card_id, pool__user=request.user
-                ).first()
-                if not card:
-                    return Response({'detail': 'Card not found.'}, status=404)
-                schedule, _ = CardSchedule.objects.select_for_update().get_or_create(card=card)
-
-                direction = request.data.get('direction', ReviewLog.Direction.TERM_TO_DEFINITION)
-                if direction not in {
-                    ReviewLog.Direction.TERM_TO_DEFINITION,
-                    ReviewLog.Direction.DEFINITION_TO_TERM,
-                }:
-                    return Response({'direction': ['Invalid study direction.']}, status=400)
-
-                accepted_value = request.data.get('accepted', False)
-                accepted = accepted_value if isinstance(accepted_value, bool) else str(accepted_value).lower() in {'1', 'true', 'yes'}
-                try:
-                    response_ms = max(0, min(int(request.data.get('response_ms') or 0), 60 * 60 * 1000))
-                except (TypeError, ValueError):
-                    response_ms = 0
-                raw_judge_score = request.data.get('judge_score')
-                try:
-                    judge_score = int(raw_judge_score) if raw_judge_score not in (None, '') else None
-                except (TypeError, ValueError):
-                    return Response({'judge_score': ['Use an integer from 1 to 7.']}, status=400)
-                if judge_score is not None and not 1 <= judge_score <= 7:
-                    return Response({'judge_score': ['Use an integer from 1 to 7.']}, status=400)
-                try:
-                    hint_revealed_letters = max(0, int(request.data.get('hint_revealed_letters') or 0))
-                    hint_total_letters = max(0, int(request.data.get('hint_total_letters') or 0))
-                except (TypeError, ValueError):
-                    hint_revealed_letters = hint_total_letters = 0
-                profile = profile_for(request.user)
-                rating = automatic_rating(
-                    accepted=accepted,
-                    response_ms=response_ms,
-                    direction=direction,
-                    judge_score=judge_score,
-                    profile=profile,
-                    hint_revealed_letters=hint_revealed_letters,
-                    hint_total_letters=hint_total_letters,
-                )
-
-                previous_state, previous_interval = schedule.state, schedule.interval_days
-                practice = str(request.data.get('practice', '')).lower() in {'1', 'true', 'yes'}
-                if not practice:
-                    apply_rating(schedule, rating, profile)
-                ReviewLog.objects.create(
-                    user=request.user, card=card,
-                    direction=direction,
-                    answer=str(request.data.get('answer') or ''),
-                    judge_score=judge_score,
-                    judge_verdict=str(request.data.get('judge_verdict') or ''),
-                    feedback=str(request.data.get('feedback') or ''),
-                    accepted=accepted,
-                    rating=rating, previous_state=previous_state, new_state=schedule.state,
-                    previous_interval_days=previous_interval, new_interval_days=schedule.interval_days,
-                    response_ms=response_ms,
-                    hint_revealed_letters=hint_revealed_letters,
-                    hint_total_letters=hint_total_letters,
-                )
-                return Response({
-                    'schedule': {
-                        'state': schedule.state, 'due_at': schedule.due_at,
-                        'interval_days': schedule.interval_days,
-                        'ease_factor': schedule.ease_factor, 'repetitions': schedule.repetitions,
-                        'lapses': schedule.lapses,
-                    },
-                    'practice': practice,
-                    'automatic_rating': rating,
-                    'automatic_rating_label': ReviewLog.Rating(rating).label,
-                })
+            judge_score = int(raw_judge_score) if raw_judge_score not in (None, '') else None
+        except (TypeError, ValueError):
+            return Response({'judge_score': ['Use an integer from 1 to 7.']}, status=400)
+        if judge_score is not None and not 1 <= judge_score <= 7:
+            return Response({'judge_score': ['Use an integer from 1 to 7.']}, status=400)
+        hint_revealed_letters, hint_total_letters = _parse_hints(request.data)
+        try:
+            result = _record_review(
+                request.user, card_id,
+                direction=direction,
+                answer=str(request.data.get('answer') or ''),
+                accepted=_parse_bool(accepted_value),
+                judge_score=judge_score,
+                judge_verdict=str(request.data.get('judge_verdict') or ''),
+                feedback=str(request.data.get('feedback') or ''),
+                response_ms=_parse_response_ms(request.data.get('response_ms')),
+                practice=_parse_bool(request.data.get('practice')),
+                hint_revealed_letters=hint_revealed_letters,
+                hint_total_letters=hint_total_letters,
+            )
         except DatabaseError:
             return Response({
                 'detail': 'This card is already being updated by another request. Try again in a moment.',
                 'code': 'review_locked',
             }, status=409)
+        if result is None:
+            return Response({'detail': 'Card not found.'}, status=404)
+        return Response(result)
 
 
 class PronunciationView(APIView):
