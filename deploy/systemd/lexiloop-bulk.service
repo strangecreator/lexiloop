@@ -1,0 +1,24 @@
+[Unit]
+Description=LexiLoop durable bulk-generation worker
+After=network-online.target lexiloop.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lexiloop
+Group=lexiloop
+WorkingDirectory=/opt/lexiloop/backend
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/opt/lexiloop/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+ExecStart=/opt/lexiloop/.venv/bin/python manage.py run_bulk_worker
+Restart=always
+RestartSec=4
+TimeoutStopSec=30
+KillSignal=SIGTERM
+PrivateTmp=true
+ProtectHome=true
+NoNewPrivileges=true
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

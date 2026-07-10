@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0b0c10" />
+    <script>
+      (() => {
+        try {
+          const storedTheme = localStorage.getItem('lexiloop_theme') || 'system';
+          const theme = storedTheme === 'system'
+            ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+            : storedTheme;
+          const allowed = ['violet','indigo','blue','teal','emerald','rose','orange'];
+          const accent = localStorage.getItem('lexiloop_accent');
+          document.documentElement.dataset.theme = theme === 'light' ? 'light' : 'dark';
+          document.documentElement.dataset.accent = allowed.includes(accent) ? accent : 'emerald';
+          document.querySelector('meta[name="theme-color"]').content = theme === 'light' ? '#f5f5f8' : '#0a0b0f';
+        } catch (_) {}
+      })();
+    </script>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico?v=2" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png?v=2" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png?v=2" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=2" />
+    <link rel="manifest" href="/static/site.webmanifest?v=2" />
+    <meta name="description" content="LexiLoop — AI-assisted spaced repetition for English vocabulary." />
+    <title>LexiLoop · Sign in</title>
+  </head>
+  <body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body>
+</html>

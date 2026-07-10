@@ -1,0 +1,14 @@
+Django>=5.2,<5.3
+djangorestframework>=3.15,<3.17
+cryptography>=43,<47
+python-dotenv>=1.0,<2
+redis>=5,<7
+whitenoise>=6.8,<7
+gunicorn>=23,<24
+dj-database-url>=2.3,<4
+psycopg[binary]>=3.2,<4
+aiohttp>=3.10,<4
+requests>=2.31,<3
+edge-tts>=7.2,<8
+wordfreq>=3.1,<4
+pyspellchecker>=0.8,<1
