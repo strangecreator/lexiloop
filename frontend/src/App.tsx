@@ -278,11 +278,47 @@ function Home({pools,activePool,setActivePool,go,refreshPools}:{pools:Pool[];act
       <Stat icon={<Zap/>} value={data?.reviews_today??0} label="Reviews today" hint="keep the loop moving"/>
       <Stat icon={<ShieldCheck/>} value={`${data?.retention??0}%`} label="Answer retention" hint="all-time accepted"/>
     </div>
+    <section className="panel activity-panel"><div className="section-heading"><div><span className="eyebrow">STUDY ACTIVITY</span><h2>Your learning year</h2></div><span className="muted">{(data?.activity??[]).reduce((n,x)=>n+x.reviews,0).toLocaleString()} reviews in the last year</span></div><ActivityHeatmap rows={data?.activity??[]}/></section>
     <section><div className="section-heading"><div><span className="eyebrow">COLLECTIONS</span><h2>Your pools</h2></div><button className="text-button" onClick={()=>go('library')}>Open library <ArrowRight size={16}/></button></div>
       <div className="pool-card-grid">{pools.map(p=><button className="pool-card" key={p.id} onClick={()=>{setActivePool(p.id);go('library')}}><div className={`pool-icon ${poolAccentClass(p.accent)}`}><BookOpen/></div><div><h3>{p.name}</h3><p>{p.description||'Your vocabulary collection'}</p></div><div className="pool-meta"><span>{p.card_count} cards</span><span className={p.due_count?'due':''}>{p.due_count} due</span></div><ChevronRight className="pool-arrow"/></button>)}
         {!pools.length&&<Empty title="No pools yet" text="Create your first pool from the sidebar, then add a word and let AI fill in the rest." icon={<FolderPlus/>}/>}</div>
     </section>
   </div>
+}
+function dateKey(date:Date){return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`}
+const MONTH_NAMES=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+function ActivityHeatmap({rows}:{rows:{day:string;reviews:number}[]}){
+  const scrollRef=useRef<HTMLDivElement>(null)
+  useEffect(()=>{const el=scrollRef.current;if(el)el.scrollLeft=el.scrollWidth},[rows.length])
+  const byDay=new Map(rows.map(row=>[row.day,row.reviews]))
+  const today=new Date();today.setHours(0,0,0,0)
+  const start=new Date(today);start.setDate(start.getDate()-364)
+  start.setDate(start.getDate()-((start.getDay()+6)%7)) // back to Monday
+  const weeks:{date:Date;key:string;count:number}[][]=[]
+  for(let day=new Date(start);day<=today;day.setDate(day.getDate()+1)){
+    const date=new Date(day)
+    if(!weeks.length||weeks[weeks.length-1].length===7)weeks.push([])
+    weeks[weeks.length-1].push({date,key:dateKey(date),count:byDay.get(dateKey(date))??0})
+  }
+  const max=Math.max(1,...rows.map(row=>row.reviews))
+  const level=(count:number)=>count===0?0:Math.min(4,Math.max(1,Math.ceil(4*count/max)))
+  const monthLabel=(index:number)=>{
+    const month=weeks[index][0].date.getMonth()
+    if(index===0)return MONTH_NAMES[month]
+    return month!==weeks[index-1][0].date.getMonth()?MONTH_NAMES[month]:''
+  }
+  return <div className="activity-scroll" ref={scrollRef}><div className="activity-grid-wrap">
+    <div className="activity-months">{weeks.map((_,index)=><span key={index}>{monthLabel(index)}</span>)}</div>
+    <div className="activity-body">
+      <div className="activity-weekdays"><span>Mon</span><span>Wed</span><span>Fri</span></div>
+      <div className="activity-grid" role="img" aria-label="Daily study activity for the last year">
+        {weeks.map((week,index)=><div className="activity-week" key={index}>
+          {week.map(cell=><span key={cell.key} className={`activity-cell level-${level(cell.count)}`} title={`${cell.count} review${cell.count===1?'':'s'} on ${cell.date.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}`}/>)}
+        </div>)}
+      </div>
+    </div>
+    <div className="activity-legend"><span>Less</span>{[0,1,2,3,4].map(value=><span key={value} className={`activity-cell level-${value}`}/>)}<span>More</span></div>
+  </div></div>
 }
 function NotFound({onHome}:{onHome:()=>void}){return <div className="center-stage"><Empty icon={<AlertTriangle/>} title="Page not found" text="This address is not part of LexiLoop. Admin, API, and application pages now have separate routes."/><div className="empty-actions"><button className="primary" onClick={onHome}><ArrowRight size={16}/>Return to Overview</button></div></div>}
 function Stat({icon,value,label,hint,accent=false}:{icon:React.ReactNode;value:string|number;label:string;hint:string;accent?:boolean}){return <div className={`stat-card ${accent?'accent':''}`}><div className="stat-icon">{icon}</div><div><strong>{value}</strong><span>{label}</span><small>{hint}</small></div></div>}

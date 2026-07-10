@@ -505,11 +505,34 @@ textarea{resize:none!important;overflow-y:hidden;max-height:420px;scrollbar-gutt
 }
 
 @media(max-width:500px){
-  .sidebar{width:100vw;max-width:100vw;border-right:0;padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
+  /* Percentages, not vw: the body zoom multiplies vw lengths, so 100vw rendered
+     20% wider than the screen and pushed sidebar buttons off-screen. A fixed
+     element's percentage width resolves against the zoom-adjusted viewport. */
+  .sidebar{width:100%;max-width:100%;border-right:0;padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
   .sidebar.open{transform:translateX(0)}
   .sidebar.collapsed{transform:translateX(-105%)}
   .pool-context-menu{left:8px!important;right:8px!important;width:auto!important;max-width:none!important}
 }
+
+/* v1.11 study-activity heatmap */
+.activity-panel .section-heading{margin-bottom:20px}
+.activity-scroll{overflow-x:auto;overscroll-behavior-x:contain;padding-bottom:4px;scrollbar-width:thin}
+.activity-grid-wrap{width:max-content;min-width:100%}
+.activity-months{display:grid;grid-auto-flow:column;grid-auto-columns:14px;gap:0;margin-left:34px;margin-bottom:6px;font-size:9px;color:var(--muted)}
+.activity-months span{width:14px;overflow:visible;white-space:nowrap}
+.activity-body{display:flex;gap:6px}
+.activity-weekdays{display:grid;grid-template-rows:repeat(7,14px);font-size:9px;color:var(--muted2);width:28px;text-align:right;position:sticky;left:0;background:var(--surface);z-index:1;padding-right:2px}
+.activity-weekdays span:nth-child(1){grid-row:1}.activity-weekdays span:nth-child(2){grid-row:3}.activity-weekdays span:nth-child(3){grid-row:5}
+.activity-grid{display:flex;gap:0}
+.activity-week{display:grid;grid-template-rows:repeat(7,14px);width:14px}
+.activity-cell{width:11px;height:11px;border-radius:3px;background:var(--surface3);border:1px solid color-mix(in srgb,var(--border) 55%,transparent)}
+.activity-cell.level-1{background:color-mix(in srgb,var(--primary) 25%,var(--surface3));border-color:transparent}
+.activity-cell.level-2{background:color-mix(in srgb,var(--primary) 50%,var(--surface3));border-color:transparent}
+.activity-cell.level-3{background:color-mix(in srgb,var(--primary) 75%,var(--surface3));border-color:transparent}
+.activity-cell.level-4{background:var(--primary);border-color:transparent}
+.activity-legend{display:flex;align-items:center;gap:4px;justify-content:flex-end;margin-top:10px;font-size:9px;color:var(--muted2)}
+.activity-legend span:first-child{margin-right:3px}.activity-legend span:last-child{margin-left:3px}
+@media(max-width:560px){.activity-panel{padding:17px}.activity-panel .section-heading{align-items:flex-start;flex-direction:column;gap:4px}}
 
 /* v1.11 per-provider API keys */
 .provider-key-list{padding:10px 23px 14px;display:grid}

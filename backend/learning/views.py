@@ -533,6 +533,16 @@ class OverviewView(APIView):
         schedules = CardSchedule.objects.filter(card__in=cards)
         reviews = ReviewLog.objects.filter(user=request.user)
         current_due = due_breakdown(cards, user=request.user, profile=profile, now=now)
+        # Days with at least one review over the last year, for the activity
+        # heatmap. Days without reviews are omitted; the frontend fills the grid.
+        activity_start = timezone.localdate() - timedelta(days=370)
+        activity = [
+            {'day': row['day'].isoformat(), 'reviews': row['total']}
+            for row in reviews.filter(created_at__date__gte=activity_start)
+            .annotate(day=TruncDate('created_at')).values('day')
+            .annotate(total=Count('id')).order_by('day')
+            if row['day']
+        ]
         return Response({
             'total_cards': cards.count(),
             'due_now': current_due.available,
@@ -540,6 +550,7 @@ class OverviewView(APIView):
             'reviews_today': reviews.filter(created_at__date=timezone.localdate()).count(),
             'retention': round(100 * reviews.filter(accepted=True).count() / max(1, reviews.count()), 1),
             'streak': _streak(reviews),
+            'activity': activity,
         })
 
 

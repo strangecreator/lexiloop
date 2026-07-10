@@ -551,6 +551,25 @@ class SchedulerTests(ApiBase):
         next_response = self.client.get('/api/study/next/')
         self.assertEqual(next_response.data['queue_count'], 7)
 
+    def test_overview_activity_aggregates_reviews_per_day(self):
+        card = self.card()
+        now = timezone.now()
+        for days_ago, count in ((0, 2), (3, 1), (500, 4)):
+            for _ in range(count):
+                log = ReviewLog.objects.create(
+                    user=self.user, card=card, direction='term_to_definition',
+                    accepted=True, rating=3, previous_state='new', new_state='learning',
+                )
+                ReviewLog.objects.filter(pk=log.pk).update(created_at=now - timedelta(days=days_ago))
+        response = self.client.get('/api/overview/')
+        self.assertEqual(response.status_code, 200)
+        activity = {row['day']: row['reviews'] for row in response.data['activity']}
+        today = timezone.localdate().isoformat()
+        self.assertEqual(activity[today], 2)
+        self.assertEqual(activity[(timezone.localdate() - timedelta(days=3)).isoformat()], 1)
+        # Days beyond the one-year window and empty days are omitted.
+        self.assertEqual(len(activity), 2)
+
     def test_daily_new_limit_hides_new_cards(self):
         card = self.card()
         self.profile.daily_new_limit = 0; self.profile.save()
