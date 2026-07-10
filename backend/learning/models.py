@@ -41,9 +41,10 @@ class UserProfile(models.Model):
     accent_color = models.CharField(max_length=16, choices=AccentColor.choices, default=AccentColor.EMERALD)
     study_direction = models.CharField(max_length=32, choices=Direction.choices, default=Direction.MIXED)
     generation_model = models.CharField(max_length=200, default='external:deepseek-chat')
-    generation_token_encrypted = models.TextField(blank=True)
     judge_model = models.CharField(max_length=200, default='external:deepseek-chat')
-    judge_token_encrypted = models.TextField(blank=True)
+    # Encrypted API keys keyed by token provider ('deepseek', 'openai', …), so a
+    # saved key survives switching between models of the same provider.
+    provider_tokens_encrypted = models.JSONField(default=dict, blank=True)
     judge_acceptance_score = models.PositiveSmallIntegerField(default=5, validators=[MinValueValidator(1), MaxValueValidator(7)])
     reveal_threshold = models.PositiveSmallIntegerField(default=5, validators=[MinValueValidator(1), MaxValueValidator(7)])
     daily_new_limit = models.PositiveIntegerField(default=20, validators=[MinValueValidator(0), MaxValueValidator(500)])

@@ -511,6 +511,20 @@ textarea{resize:none!important;overflow-y:hidden;max-height:420px;scrollbar-gutt
   .pool-context-menu{left:8px!important;right:8px!important;width:auto!important;max-width:none!important}
 }
 
+/* v1.11 per-provider API keys */
+.provider-key-list{padding:10px 23px 14px;display:grid}
+.provider-key-row{display:flex;align-items:center;gap:13px;padding:12px 0;border-bottom:1px solid var(--border)}
+.provider-key-row:last-child{border-bottom:0}
+.provider-key-row>div{flex:1;display:flex;flex-direction:column;gap:2px;min-width:0}
+.provider-key-row b{font-size:13px}
+.provider-key-row small{font-size:10px;color:var(--muted2)}
+.provider-key-dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--border2)}
+.provider-key-dot.saved,.provider-key-dot.staging{background:var(--green)}
+.provider-key-dot.removing{background:var(--red)}
+.provider-key-row .status.neutral{color:var(--muted);background:var(--surface3)}
+.provider-key-row .danger-text,.provider-key-row .ghost{font-size:11px;padding:6px 10px;flex:none}
+@media(max-width:560px){.provider-key-list{padding-inline:17px}.provider-key-row{flex-wrap:wrap;row-gap:6px}.provider-key-row>div{flex:1 1 60%}}
+
 @media(max-width:430px){
   .page{padding-inline:11px;padding-bottom:38px}
   .floating-sidebar-button{left:11px;top:12px}

@@ -177,13 +177,35 @@ class PoolAndCardTests(ApiBase):
 
     @override_settings(TOKEN_ENCRYPTION_KEY='')
     def test_tokens_are_encrypted_and_not_returned(self):
-        response = self.client.patch('/api/settings/', {'generation_token': 'secret-token'}, format='json')
+        response = self.client.patch('/api/settings/', {'provider_tokens': {'deepseek': 'secret-token'}}, format='json')
         self.assertEqual(response.status_code, 200)
         self.profile.refresh_from_db()
-        self.assertNotIn('secret-token', self.profile.generation_token_encrypted)
-        self.assertEqual(decrypt_secret(self.profile.generation_token_encrypted), 'secret-token')
-        self.assertNotIn('generation_token', response.data)
+        stored = self.profile.provider_tokens_encrypted['deepseek']
+        self.assertNotIn('secret-token', stored)
+        self.assertEqual(decrypt_secret(stored), 'secret-token')
+        self.assertNotIn('provider_tokens', response.data)
+        # The default generation and judge models are DeepSeek, so both flags flip.
         self.assertTrue(response.data['has_generation_token'])
+        self.assertTrue(response.data['has_judge_token'])
+        self.assertEqual(response.data['token_status'], {'deepseek': True, 'openai': False, 'openrouter': False, 'xiaomi': False})
+
+    def test_saved_provider_key_survives_model_switch_and_can_be_removed(self):
+        self.client.patch('/api/settings/', {'provider_tokens': {'deepseek': 'ds-key', 'openai': 'oa-key'}}, format='json')
+        response = self.client.patch('/api/settings/', {'judge_model': 'openai:gpt-5-nano'}, format='json')
+        self.assertTrue(response.data['has_judge_token'])
+        self.assertTrue(response.data['has_generation_token'])
+        response = self.client.patch('/api/settings/', {'judge_model': 'external:deepseek-chat'}, format='json')
+        self.assertTrue(response.data['has_judge_token'])
+        # An empty value deletes the stored key; other providers stay intact.
+        response = self.client.patch('/api/settings/', {'provider_tokens': {'openai': ''}}, format='json')
+        self.assertEqual(response.data['token_status'], {'deepseek': True, 'openai': False, 'openrouter': False, 'xiaomi': False})
+        self.profile.refresh_from_db()
+        self.assertNotIn('openai', self.profile.provider_tokens_encrypted)
+
+    def test_provider_tokens_reject_unknown_provider(self):
+        response = self.client.patch('/api/settings/', {'provider_tokens': {'acme': 'key'}}, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('provider_tokens', response.data)
 
 
 class PoolOperationsTests(ApiBase):
@@ -271,8 +293,7 @@ class LlmTests(ApiBase):
     def setUp(self):
         super().setUp()
         from learning.services.security import encrypt_secret
-        self.profile.generation_token_encrypted = encrypt_secret('token')
-        self.profile.judge_token_encrypted = encrypt_secret('token')
+        self.profile.provider_tokens_encrypted = {'deepseek': encrypt_secret('token')}
         self.profile.save()
 
     @patch('learning.services.llm._post', new_callable=AsyncMock)
@@ -612,8 +633,8 @@ class DurableBulkGenerationTests(ApiTransactionBase):
     def setUp(self):
         super().setUp()
         from learning.services.security import encrypt_secret
-        self.profile.generation_token_encrypted = encrypt_secret('token')
-        self.profile.save(update_fields=['generation_token_encrypted'])
+        self.profile.provider_tokens_encrypted = {'deepseek': encrypt_secret('token')}
+        self.profile.save(update_fields=['provider_tokens_encrypted'])
 
     def test_bulk_api_returns_queued_job_without_waiting_for_generation(self):
         response = self.client.post('/api/generate/bulk/', {

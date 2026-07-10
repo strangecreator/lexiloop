@@ -1,5 +1,5 @@
 export interface ModelOption {
-  id:string; label:string; provider:string; description:string; token_label:string;
+  id:string; label:string; provider:string; description:string; token_label:string; token_provider:string;
   recommended_for:('generation'|'judge')[]; badge?:string; key_url?:string|null;
 }
 export type Theme = 'dark' | 'light' | 'system'
@@ -8,7 +8,8 @@ export type Direction = 'mixed' | 'term_to_definition' | 'definition_to_term'
 
 export interface Settings {
   theme: Theme; accent_color: AccentColor; study_direction: Direction; generation_model: string; has_generation_token: boolean;
-  judge_model: string; has_judge_token: boolean; judge_acceptance_score: number; reveal_threshold: number;
+  judge_model: string; has_judge_token: boolean; token_status: Record<string, boolean>;
+  judge_acceptance_score: number; reveal_threshold: number;
   daily_new_limit: number; learning_steps_minutes: number[]; relearning_steps_minutes: number[];
   graduating_interval_days: number; easy_interval_days: number; easy_bonus: number;
   hard_multiplier: number; lapse_multiplier: number; minimum_ease: number;

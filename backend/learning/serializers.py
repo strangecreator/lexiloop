@@ -4,7 +4,7 @@ from rest_framework import serializers
 from learning.models import BulkGenerationItem, BulkGenerationJob, CardSchedule, Flashcard, Pool, UserProfile
 from learning.services.english import InvalidEnglishTerm, validate_english_term
 from learning.services.security import encrypt_secret
-from learning.services.model_catalog import is_supported_model
+from learning.services.model_catalog import TOKEN_PROVIDERS, is_supported_model, token_provider_for
 
 
 class RegisterSerializer(serializers.Serializer):
@@ -143,16 +143,22 @@ class BulkGenerationJobSerializer(serializers.ModelSerializer):
 
 
 class ProfileSerializer(serializers.ModelSerializer):
-    generation_token = serializers.CharField(write_only=True, required=False, allow_blank=True, trim_whitespace=False)
-    judge_token = serializers.CharField(write_only=True, required=False, allow_blank=True, trim_whitespace=False)
+    # {'openai': 'sk-…'} saves or replaces one key per provider; an empty string
+    # removes the stored key. Providers not mentioned are left untouched.
+    provider_tokens = serializers.DictField(
+        child=serializers.CharField(allow_blank=True, trim_whitespace=False),
+        write_only=True, required=False,
+    )
+    token_status = serializers.SerializerMethodField()
     has_generation_token = serializers.SerializerMethodField()
     has_judge_token = serializers.SerializerMethodField()
 
     class Meta:
         model = UserProfile
         fields = [
-            'theme', 'accent_color', 'study_direction', 'generation_model', 'generation_token', 'has_generation_token',
-            'judge_model', 'judge_token', 'has_judge_token', 'judge_acceptance_score', 'reveal_threshold',
+            'theme', 'accent_color', 'study_direction', 'generation_model', 'has_generation_token',
+            'judge_model', 'has_judge_token', 'provider_tokens', 'token_status',
+            'judge_acceptance_score', 'reveal_threshold',
             'daily_new_limit', 'learning_steps_minutes', 'relearning_steps_minutes',
             'graduating_interval_days', 'easy_interval_days', 'easy_bonus', 'hard_multiplier',
             'lapse_multiplier', 'minimum_ease',
@@ -160,11 +166,26 @@ class ProfileSerializer(serializers.ModelSerializer):
             'definition_to_term_easy_seconds', 'definition_to_term_good_seconds',
         ]
 
+    @staticmethod
+    def _has_provider_token(obj, model_id):
+        provider = token_provider_for(model_id)
+        return bool((obj.provider_tokens_encrypted or {}).get(provider))
+
+    def get_token_status(self, obj):
+        saved = obj.provider_tokens_encrypted or {}
+        return {provider: bool(saved.get(provider)) for provider in TOKEN_PROVIDERS}
+
     def get_has_generation_token(self, obj):
-        return bool(obj.generation_token_encrypted)
+        return self._has_provider_token(obj, obj.generation_model)
 
     def get_has_judge_token(self, obj):
-        return bool(obj.judge_token_encrypted)
+        return self._has_provider_token(obj, obj.judge_model)
+
+    def validate_provider_tokens(self, value):
+        unknown = sorted(set(value) - set(TOKEN_PROVIDERS))
+        if unknown:
+            raise serializers.ValidationError(f"Unknown provider: {', '.join(unknown)}.")
+        return value
 
     def validate_generation_model(self, value):
         if not is_supported_model(value):
@@ -208,8 +229,14 @@ class ProfileSerializer(serializers.ModelSerializer):
         return attrs
 
     def update(self, instance, validated_data):
-        if 'generation_token' in validated_data:
-            instance.generation_token_encrypted = encrypt_secret(validated_data.pop('generation_token'))
-        if 'judge_token' in validated_data:
-            instance.judge_token_encrypted = encrypt_secret(validated_data.pop('judge_token'))
+        updates = validated_data.pop('provider_tokens', None)
+        if updates:
+            saved = dict(instance.provider_tokens_encrypted or {})
+            for provider, token in updates.items():
+                encrypted = encrypt_secret(token)
+                if encrypted:
+                    saved[provider] = encrypted
+                else:
+                    saved.pop(provider, None)
+            instance.provider_tokens_encrypted = saved
         return super().update(instance, validated_data)

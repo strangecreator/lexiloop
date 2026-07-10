@@ -13,7 +13,7 @@ from django.conf import settings
 from learning.exceptions import LlmConfigurationError, LlmResponseError
 from learning.models import Flashcard, LlmUsage, Pool, UserProfile
 from learning.services.english import InvalidEnglishTerm, validate_english_term
-from learning.services.model_catalog import MODEL_IDS
+from learning.services.model_catalog import MODEL_IDS, TOKEN_PROVIDERS, token_provider_for
 from learning.services.security import decrypt_secret
 
 GENERATION_SYSTEM_PROMPT = '''You create precise English-learning flashcards for advanced learners.
@@ -62,10 +62,13 @@ Do not use probabilities or decimal scores.'''
 
 
 def _token(profile: UserProfile, operation: str) -> str | None:
-    encrypted = profile.generation_token_encrypted if operation == LlmUsage.Operation.GENERATION else profile.judge_token_encrypted
+    model = profile.generation_model if operation == LlmUsage.Operation.GENERATION else profile.judge_model
+    provider = token_provider_for(model)
+    encrypted = (profile.provider_tokens_encrypted or {}).get(provider, '')
     token = decrypt_secret(encrypted)
     if not token and not settings.ALLOW_SERVER_LLM_TOKENS:
-        raise LlmConfigurationError(f"No {operation.replace('_', ' ')} provider token is configured. Open Settings and add one.")
+        label = TOKEN_PROVIDERS.get(provider, provider or 'provider')
+        raise LlmConfigurationError(f'No {label} API key is saved. Open Settings and add one.')
     return token or None
 
 
