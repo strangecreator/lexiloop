@@ -2,7 +2,7 @@
 
 LexiLoop is a Django + React platform for building and retaining English vocabulary. It combines one-field AI card creation, semantic answer judging, durable high-volume generation, server-side pagination, PostgreSQL storage, HTTPS deployment, and an Anki-inspired review scheduler with a polished responsive interface.
 
-Version **1.10.0** focuses on user-tested reliability and mobile polish: review results are saved immediately, direct OpenAI API models are available, the default accent is emerald, and narrow smartphone layouts are improved.
+Version **1.11.0** focuses on provider reliability and convenience: judge and generation calls fail fast with readable errors instead of hanging, API keys are stored once per provider and survive model switches, the Overview gains a GitHub-style study-activity heatmap, the Settings page is centered on wide monitors, and narrow-mobile layouts (especially popups) are corrected.
 
 ## Highlights
 
@@ -21,6 +21,27 @@ Version **1.10.0** focuses on user-tested reliability and mobile polish: review 
 - Dynamic page titles, cached pronunciation audio, custom favicon, and responsive UI.
 - Dedicated routes: `/overview`, `/study`, `/library`, `/analytics`, `/settings`, `/auth`, `/register`, and `/admin/`.
 - Unknown URLs return a custom LexiLoop 404 page instead of the SPA shell.
+
+## v1.11.0 changes
+
+### No more multi-minute hangs on Check answer
+
+Judge requests now use a dedicated short timeout (`JUDGE_REQUEST_TIMEOUT_SECONDS`, 30 s) and a hard end-to-end deadline (`JUDGE_TOTAL_DEADLINE_SECONDS`, 40 s). Single-card generation is capped at `GENERATION_TOTAL_DEADLINE_SECONDS` (170 s), below the gunicorn worker timeout. The browser also aborts stalled requests itself (judge 50 s, review save 20 s, generation 180 s) and shows a clear retry message. Timeouts and provider errors are logged to AI usage → Recent failures with their real cause instead of an opaque `AttemptsExceededError`, so provider slowness (for example DeepSeek at peak hours) is now visible and diagnosable.
+
+### One API key per provider
+
+API keys are stored per provider (DeepSeek, OpenAI, OpenRouter, Xiaomi) instead of per role. Switching the generation or judge model to another model of the same provider keeps the saved key. Settings shows a new **Saved API keys** panel with each provider's key state and remove/undo actions. Migration `learning.0007_per_provider_api_keys` moves existing encrypted tokens into the new storage; nothing needs to be re-entered.
+
+### Study-activity heatmap
+
+The Overview page shows a GitHub-style contributions grid of the last year of reviews. Cell tint follows the interface accent color and scales with how many cards were reviewed that day. The grid scrolls horizontally on narrow screens and starts at the most recent week. `/api/overview/` now returns the `activity` series.
+
+### Layout corrections
+
+- The Settings page content is centered between the sidebar and the right edge on large monitors.
+- Below 500 px the sidebar previously rendered ~20% wider than the screen (viewport units are multiplied by the global interface zoom), pushing the new-pool and pool-action buttons off-screen. It now spans exactly the screen width.
+- The bulk-generation review step no longer collapses the normalized-terms list inside a height-capped modal.
+- Keyboard-shortcut hints are hidden on touch devices, and AI-usage headings stack on narrow screens.
 
 ## v1.10.0 changes
 
