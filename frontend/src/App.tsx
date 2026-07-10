@@ -287,10 +287,15 @@ function Home({pools,activePool,setActivePool,go,refreshPools}:{pools:Pool[];act
 function NotFound({onHome}:{onHome:()=>void}){return <div className="center-stage"><Empty icon={<AlertTriangle/>} title="Page not found" text="This address is not part of LexiLoop. Admin, API, and application pages now have separate routes."/><div className="empty-actions"><button className="primary" onClick={onHome}><ArrowRight size={16}/>Return to Overview</button></div></div>}
 function Stat({icon,value,label,hint,accent=false}:{icon:React.ReactNode;value:string|number;label:string;hint:string;accent?:boolean}){return <div className={`stat-card ${accent?'accent':''}`}><div className="stat-icon">{icon}</div><div><strong>{value}</strong><span>{label}</span><small>{hint}</small></div></div>}
 function wait(ms:number){return new Promise(resolve=>window.setTimeout(resolve,ms))}
+// The review endpoint answers in milliseconds (DB statement timeout is 15 s),
+// so anything slower is a stuck connection worth surfacing quickly.
+const REVIEW_TIMEOUT_MS=20_000
+// The judge has a 40 s server-side deadline; the extra slack covers the network.
+const JUDGE_TIMEOUT_MS=50_000
 async function reviewCurrentCard(cardId:number,payload:Record<string,unknown>){
-  try{return await api(`/study/${cardId}/review/`,{method:'POST',body:JSON.stringify(payload)})}
+  try{return await api(`/study/${cardId}/review/`,{method:'POST',body:JSON.stringify(payload)},REVIEW_TIMEOUT_MS)}
   catch(error){
-    if(error instanceof ApiError && error.status===409){await wait(850);return await api(`/study/${cardId}/review/`,{method:'POST',body:JSON.stringify(payload)})}
+    if(error instanceof ApiError && error.status===409){await wait(850);return await api(`/study/${cardId}/review/`,{method:'POST',body:JSON.stringify(payload)},REVIEW_TIMEOUT_MS)}
     throw error
   }
 }
@@ -371,7 +376,7 @@ function Study({activePool,notify}:{activePool:number|null;notify:(m:string,k?:T
     if(!card||!answer.trim()||busy)return
     const measured=responseMs??elapsed();setResponseMs(measured);setBusy(true)
     try{
-      const result=await api<JudgeResult>(`/study/${card.id}/judge/`,{method:'POST',body:JSON.stringify({answer,direction:session?.direction})})
+      const result=await api<JudgeResult>(`/study/${card.id}/judge/`,{method:'POST',body:JSON.stringify({answer,direction:session?.direction})},JUDGE_TIMEOUT_MS)
       setJudge(result);if(result.should_reveal)setRevealed(true)
       await recordReview(result,measured)
     }catch(e){notify((e as Error).message,'error');setBusy(false)}
@@ -517,7 +522,7 @@ function LibraryPage({activePool,pools,notify,refreshPools}:{activePool:number|n
   useEffect(()=>{setPage(1);setExpanded(null)},[activePool])
   const load=useCallback(async(targetPage=page,targetSearch=debouncedSearch)=>{if(!activePool){setCards([]);setTotal(0);setLoading(false);return}setLoading(true);try{const data=await apiPage<Card>(`/flashcards/?pool=${activePool}&search=${encodeURIComponent(targetSearch)}&page=${targetPage}&page_size=${PAGE_SIZE}`);if(!data.results.length&&data.count&&targetPage>1){setPage(Math.max(1,Math.ceil(data.count/PAGE_SIZE)));return}setCards(data.results);setTotal(data.count);setExpanded(null)}catch(e){notify((e as Error).message,'error')}finally{setLoading(false)}},[activePool,debouncedSearch,page])
   useEffect(()=>{void load()},[load])
-  const generate=async()=>{if(!activePool||!term.trim())return;setBusy(true);try{const card=await api<Card>('/generate/',{method:'POST',body:JSON.stringify({pool:activePool,term:term.trim()})});setTerm('');setPage(1);setDebouncedSearch('');setSearch('');notify(`Generated “${card.term}”`);await Promise.all([load(1,''),refreshPools()])}catch(e){notify((e as Error).message,'error')}finally{setBusy(false)}}
+  const generate=async()=>{if(!activePool||!term.trim())return;setBusy(true);try{const card=await api<Card>('/generate/',{method:'POST',body:JSON.stringify({pool:activePool,term:term.trim()})},180_000);setTerm('');setPage(1);setDebouncedSearch('');setSearch('');notify(`Generated “${card.term}”`);await Promise.all([load(1,''),refreshPools()])}catch(e){notify((e as Error).message,'error')}finally{setBusy(false)}}
   const selected=pools.find(p=>p.id===activePool)
   const first=total?((page-1)*PAGE_SIZE)+1:0
   const last=Math.min(total,page*PAGE_SIZE)

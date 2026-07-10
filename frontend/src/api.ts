@@ -13,11 +13,23 @@ function flattenErrors(data:any):string {
 }
 export function token() { return localStorage.getItem('lexiloop_token') || '' }
 export function setToken(value:string) { value ? localStorage.setItem('lexiloop_token', value) : localStorage.removeItem('lexiloop_token') }
-export async function api<T>(path:string, options:RequestInit={}):Promise<T> {
+export async function api<T>(path:string, options:RequestInit={}, timeoutMs?:number):Promise<T> {
   const headers = new Headers(options.headers)
   if (!(options.body instanceof FormData)) headers.set('Content-Type','application/json')
   if (token()) headers.set('Authorization',`Token ${token()}`)
-  const response = await fetch(`${API}${path}`, {...options, headers})
+  // Browsers wait minutes on a stalled connection by default; time-critical
+  // calls pass timeoutMs so the UI fails fast with a readable error instead.
+  const controller = timeoutMs ? new AbortController() : null
+  const timer = controller ? window.setTimeout(()=>controller.abort(), timeoutMs) : 0
+  let response:Response
+  try {
+    response = await fetch(`${API}${path}`, {...options, headers, ...(controller ? {signal:controller.signal} : {})})
+  } catch (error) {
+    if (controller?.signal.aborted) throw new ApiError(0, {detail:`No response after ${Math.round((timeoutMs||0)/1000)} seconds. Check your connection and try again.`})
+    throw error
+  } finally {
+    if (timer) window.clearTimeout(timer)
+  }
   if (response.status === 204) return undefined as T
   const data = await response.json().catch(()=>({detail:response.statusText}))
   if (!response.ok) throw new ApiError(response.status,data)

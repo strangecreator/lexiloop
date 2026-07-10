@@ -53,7 +53,7 @@ class AuthTests(TestCase):
         self.assertEqual(user.email, '')
         self.assertTrue(hasattr(user, 'profile'))
         self.assertEqual(user.profile.theme, UserProfile.Theme.SYSTEM)
-        self.assertEqual(user.profile.accent_color, UserProfile.AccentColor.VIOLET)
+        self.assertEqual(user.profile.accent_color, UserProfile.AccentColor.EMERALD)
 
 
 class PoolAndCardTests(ApiBase):
@@ -348,6 +348,59 @@ class LlmTests(ApiBase):
         )
         self.assertTrue(response.data['accepted'])
 
+
+    @override_settings(JUDGE_HEDGE_DELAY_SECONDS=0.01, JUDGE_TOTAL_DEADLINE_SECONDS=1)
+    def test_judge_deadline_turns_stalled_provider_into_fast_clean_error(self):
+        card = self.card()
+
+        async def stalled_post(*args, **kwargs):
+            await asyncio.sleep(30)
+
+        with patch('learning.services.llm._post', side_effect=stalled_post):
+            response = self.client.post(
+                f'/api/study/{card.id}/judge/',
+                {'answer': 'being careful', 'direction': 'term_to_definition'},
+                format='json',
+            )
+        self.assertEqual(response.status_code, 502)
+        self.assertIn('did not answer within 1 seconds', response.data['detail'])
+        usage = LlmUsage.objects.get()
+        self.assertFalse(usage.success)
+        self.assertIn('did not answer', usage.error)
+
+    @override_settings(JUDGE_HEDGE_DELAY_SECONDS=0.01, JUDGE_TOTAL_DEADLINE_SECONDS=5)
+    def test_judge_provider_timeouts_surface_readable_message(self):
+        card = self.card()
+
+        async def failing_post(*args, **kwargs):
+            raise TimeoutError('provider read timeout')
+
+        with patch('learning.services.llm._post', side_effect=failing_post):
+            response = self.client.post(
+                f'/api/study/{card.id}/judge/',
+                {'answer': 'being careful', 'direction': 'term_to_definition'},
+                format='json',
+            )
+        self.assertEqual(response.status_code, 502)
+        self.assertNotIn('AttemptsExceeded', response.data['detail'])
+        self.assertIn('did not answer', response.data['detail'])
+
+    @override_settings(JUDGE_HEDGE_DELAY_SECONDS=0.01, JUDGE_TOTAL_DEADLINE_SECONDS=5)
+    def test_judge_provider_errors_keep_original_cause_not_attempts_exceeded(self):
+        card = self.card()
+
+        async def failing_post(*args, **kwargs):
+            raise RuntimeError('DeepSeek returned 503')
+
+        with patch('learning.services.llm._post', side_effect=failing_post):
+            response = self.client.post(
+                f'/api/study/{card.id}/judge/',
+                {'answer': 'being careful', 'direction': 'term_to_definition'},
+                format='json',
+            )
+        self.assertEqual(response.status_code, 502)
+        self.assertNotIn('AttemptsExceeded', response.data['detail'])
+        self.assertIn('DeepSeek returned 503', response.data['detail'])
 
     @override_settings(JUDGE_HEDGE_DELAY_SECONDS=0.01)
     def test_hedged_judge_starts_backup_and_returns_first_success(self):

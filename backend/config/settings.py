@@ -89,6 +89,13 @@ LLM_REQUEST_TIMEOUT_SECONDS = int(os.getenv('LLM_REQUEST_TIMEOUT_SECONDS', '90')
 LLM_RETRY_ATTEMPTS = int(os.getenv('LLM_RETRY_ATTEMPTS', '2'))
 LLM_RETRY_BACKOFF_SECONDS = float(os.getenv('LLM_RETRY_BACKOFF_SECONDS', '1.0'))
 JUDGE_HEDGE_DELAY_SECONDS = float(os.getenv('JUDGE_HEDGE_DELAY_SECONDS', '3.0'))
+# Judge answers are ~100 tokens; a stalled provider must fail fast so the Study
+# page never blocks a worker (or the user) for minutes.
+JUDGE_REQUEST_TIMEOUT_SECONDS = int(os.getenv('JUDGE_REQUEST_TIMEOUT_SECONDS', '30'))
+# Hard ceilings for one API call end to end. Both stay below the gunicorn
+# worker timeout so a slow provider produces a clean error, not a 502.
+JUDGE_TOTAL_DEADLINE_SECONDS = int(os.getenv('JUDGE_TOTAL_DEADLINE_SECONDS', '40'))
+GENERATION_TOTAL_DEADLINE_SECONDS = int(os.getenv('GENERATION_TOTAL_DEADLINE_SECONDS', '170'))
 BULK_ITEM_ATTEMPTS = int(os.getenv('BULK_ITEM_ATTEMPTS', '3'))
 BULK_MAX_ROUNDS = int(os.getenv('BULK_MAX_ROUNDS', '5'))
 BULK_TARGET_SUCCESS_RATIO = float(os.getenv('BULK_TARGET_SUCCESS_RATIO', '0.99'))

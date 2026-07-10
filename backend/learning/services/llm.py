@@ -156,23 +156,39 @@ def _validate_generation(data: dict[str, Any], requested_term: str) -> dict[str,
     return out
 
 
-async def _post(model: str, token: str | None, messages: list[dict[str, str]], *, attempts: int | None = None):
+async def _post(model: str, token: str | None, messages: list[dict[str, str]], *, attempts: int | None = None, timeout: int | None = None):
     import aiohttp
-    timeout = settings.LLM_REQUEST_TIMEOUT_SECONDS
+    timeout = timeout or settings.LLM_REQUEST_TIMEOUT_SECONDS
+    retrying = (attempts or settings.LLM_RETRY_ATTEMPTS) > 1
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout + 15)) as session:
         return await router.llm.post(
             session=session, model=model, token=token, timeout=timeout,
             payload={'messages': messages, 'temperature': 0.1},
             attempts=attempts or settings.LLM_RETRY_ATTEMPTS,
             backoff_seconds=settings.LLM_RETRY_BACKOFF_SECONDS,
-            errors_to_ignore_func=lambda exc: isinstance(exc, (TimeoutError, aiohttp.ClientError)),
+            # With a single attempt the original timeout/connection error must
+            # propagate as is; swallowing it here would surface only an opaque
+            # AttemptsExceededError to the user and the usage log.
+            errors_to_ignore_func=(lambda exc: isinstance(exc, (TimeoutError, aiohttp.ClientError))) if retrying else None,
             verbose=False,
         )
 
 
+async def _deadline(awaitable, seconds: int, operation: str):
+    """Hard end-to-end cap so a stalled provider can never hold a worker for minutes."""
+    try:
+        return await asyncio.wait_for(awaitable, timeout=seconds)
+    except (asyncio.TimeoutError, TimeoutError) as exc:
+        raise LlmResponseError(
+            f'The {operation} model did not answer within {seconds} seconds. '
+            'The provider is probably overloaded right now — try again in a moment or switch models in Settings.'
+        ) from exc
+
+
 async def _post_hedged(model: str, token: str | None, messages: list[dict[str, str]]):
     """Start a second judge request after a short delay and return first success."""
-    primary = asyncio.create_task(_post(model, token, messages, attempts=1))
+    judge_timeout = settings.JUDGE_REQUEST_TIMEOUT_SECONDS
+    primary = asyncio.create_task(_post(model, token, messages, attempts=1, timeout=judge_timeout))
     try:
         return await asyncio.wait_for(asyncio.shield(primary), timeout=settings.JUDGE_HEDGE_DELAY_SECONDS)
     except asyncio.TimeoutError:
@@ -181,7 +197,7 @@ async def _post_hedged(model: str, token: str | None, messages: list[dict[str, s
         # A fast failure should trigger the backup immediately.
         pass
 
-    secondary = asyncio.create_task(_post(model, token, messages, attempts=1))
+    secondary = asyncio.create_task(_post(model, token, messages, attempts=1, timeout=judge_timeout))
     pending = {task for task in (primary, secondary) if not task.done()}
     errors: list[BaseException] = []
     for task in (primary, secondary):
@@ -220,7 +236,7 @@ def generate_flashcard(*, user, profile: UserProfile, pool: Pool, term: str) -> 
         {'role': 'user', 'content': json.dumps({'term': term}, ensure_ascii=False)},
     ]
     try:
-        result = asyncio.run(_post(model, token, messages))
+        result = asyncio.run(_deadline(_post(model, token, messages), settings.GENERATION_TOTAL_DEADLINE_SECONDS, 'generation'))
         content = result.get('content')
         if not isinstance(content, str):
             raise LlmResponseError('The model response has no textual content.')
@@ -245,7 +261,7 @@ def judge_definition(*, user, profile: UserProfile, card: Flashcard, answer: str
         {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)},
     ]
     try:
-        result = asyncio.run(_post_hedged(model, token, messages))
+        result = asyncio.run(_deadline(_post_hedged(model, token, messages), settings.JUDGE_TOTAL_DEADLINE_SECONDS, 'judge'))
         content = result.get('content')
         if not isinstance(content, str):
             raise LlmResponseError('The judge returned no textual content.')
