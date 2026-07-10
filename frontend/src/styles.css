@@ -514,6 +514,16 @@ textarea{resize:none!important;overflow-y:hidden;max-height:420px;scrollbar-gutt
   .pool-context-menu{left:8px!important;right:8px!important;width:auto!important;max-width:none!important}
 }
 
+/* v1.11 narrow-mobile corrections */
+/* In a height-capped modal, grid layout steals space only from rows whose items
+   may shrink (overflow:auto ⇒ zero minimum). Keep the normalized-terms list at
+   a readable two-row minimum; long lists still scroll internally. */
+.normalized-list{min-height:96px}
+.bulk-failures>div{min-height:60px}
+/* Keyboard-shortcut hints mean nothing on touch screens. */
+@media(hover:none) and (pointer:coarse){.shortcut{display:none}}
+@media(max-width:560px){.page-analytics .section-heading{align-items:flex-start;flex-direction:column;gap:4px}}
+
 /* v1.11 study-activity heatmap */
 .activity-panel .section-heading{margin-bottom:20px}
 .activity-scroll{overflow-x:auto;overscroll-behavior-x:contain;padding-bottom:4px;scrollbar-width:thin}
