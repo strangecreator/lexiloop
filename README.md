@@ -2,7 +2,7 @@
 
 LexiLoop is a Django + React platform for building and retaining English vocabulary. It combines one-field AI card creation, semantic answer judging, durable high-volume generation, server-side pagination, PostgreSQL storage, HTTPS deployment, and an Anki-inspired review scheduler with a polished responsive interface.
 
-Version **1.11.0** focuses on provider reliability and convenience: judge and generation calls fail fast with readable errors instead of hanging, API keys are stored once per provider and survive model switches, the Overview gains a GitHub-style study-activity heatmap, the Settings page is centered on wide monitors, and narrow-mobile layouts (especially popups) are corrected.
+Version **1.12.0** refines the study loop and responsive layout: answered reviews are persisted by the judge request itself, the Study progress header explains the remaining queue, the activity heatmap turns vertical on narrow screens, wide monitors get centered content, and the Library page works properly on phones.
 
 ## Highlights
 
@@ -21,6 +21,32 @@ Version **1.11.0** focuses on provider reliability and convenience: judge and ge
 - Dynamic page titles, cached pronunciation audio, custom favicon, and responsive UI.
 - Dedicated routes: `/overview`, `/study`, `/library`, `/analytics`, `/settings`, `/auth`, `/register`, and `/admin/`.
 - Unknown URLs return a custom LexiLoop 404 page instead of the SPA shell.
+
+## v1.12.0 changes
+
+### The judge saves the review in the same request
+
+When the backend judges an answer (semantic or binary), it now records the review and reschedules the card inside that same request — there is no second round-trip from the browser, and a closed tab right after "Check answer" loses nothing. The response includes `review_recorded` and the new schedule. The separate `/review/` endpoint remains for the reveal path ("Show answer") and as a fallback if the in-request save loses a lock race.
+
+The result footer now always shows the response time after a checked answer; "Saved" appears only on the reveal path, where a client-initiated save still happens.
+
+### An honest, explained progress header
+
+The Study header now reads "X done · Y left" (the old "X of Y completed" total silently grew when a failed card re-entered a learning step). Colored chips show what the remaining queue consists of — new / learning / review — with tooltips explaining each state, so a growing round is visible and understandable. `/api/study/next/` returns the new `queue_breakdown`.
+
+### Vertical activity heatmap on narrow screens
+
+Below 820 px the Overview heatmap renders vertically: weekday columns, weeks as rows with the most recent on top, month labels in the gutter, and a "Show the full year" toggle (recent quarter by default). No more horizontal scrolling on tablets and phones.
+
+### Wide-monitor centering
+
+Overview, Library, and AI usage content is capped at 1100 px and centered — a 1728 px display renders exactly as before; anything larger centers the content instead of stretching it.
+
+### Library page on phones
+
+- The expanded card no longer overflows the screen: the non-wrapping actions row forced the shared grid column of `card-details` ~20% past the viewport; actions now wrap and all children may shrink.
+- Toolbar buttons show their labels again instead of icon-only pills.
+- The generator input stacks above its button (a later wide-screen rule had squeezed them into one row).
 
 ## v1.11.0 changes
 

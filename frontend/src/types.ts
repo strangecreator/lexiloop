@@ -25,7 +25,7 @@ export interface Card {
   antonyms:string[]; collocations:string[]; usage_notes:string; aliases:string[]; suspended:boolean;
   schedule:Schedule; created_at:string; updated_at:string;
 }
-export interface JudgeResult {grading:'binary'|'ordinal'; score:number; verdict:string; feedback:string; matched_concepts:string[]; missing_or_wrong_concepts:string[]; accepted:boolean; should_reveal:boolean}
+export interface JudgeResult {grading:'binary'|'ordinal'; score:number; verdict:string; feedback:string; matched_concepts:string[]; missing_or_wrong_concepts:string[]; accepted:boolean; should_reveal:boolean; review_recorded?:boolean}
 export interface Overview {total_cards:number; due_now:number; new_cards:number; reviews_today:number; retention:number; streak:number; activity:{day:string;reviews:number}[]}
 export interface Analytics {
   daily:{day:string;cost:number;tokens:number;calls:number}[];

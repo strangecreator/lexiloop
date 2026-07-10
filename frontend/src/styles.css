@@ -514,6 +514,45 @@ textarea{resize:none!important;overflow-y:hidden;max-height:420px;scrollbar-gutt
   .pool-context-menu{left:8px!important;right:8px!important;width:auto!important;max-width:none!important}
 }
 
+/* v1.12 wide-screen centering: identical below 1728px-wide displays, centered above */
+.page-home>.stack-xl,.page-library>.stack-lg,.page-analytics>.stack-lg{max-width:1100px;margin-inline:auto}
+
+/* v1.12 study progress: done/left copy plus queue-composition chips */
+.study-progress-track{height:auto!important;background:transparent!important;overflow:visible!important;display:grid;gap:7px;min-width:0}
+.study-progress-track>[role=progressbar]{height:5px;background:var(--surface3);border-radius:99px;overflow:hidden}
+.queue-chips{display:flex;gap:5px;flex-wrap:wrap;text-transform:none;letter-spacing:.02em}
+.queue-chips span{font-size:9px;font-weight:750;padding:3px 8px;border-radius:999px;cursor:help}
+.queue-chips .qc-new{color:var(--blue);background:color-mix(in srgb,var(--blue) 12%,transparent)}
+.queue-chips .qc-learning{color:var(--orange);background:color-mix(in srgb,var(--orange) 12%,transparent)}
+.queue-chips .qc-review{color:var(--green);background:color-mix(in srgb,var(--green) 12%,transparent)}
+
+/* v1.12 vertical activity heatmap for tablets and phones */
+.activity-vertical{display:grid;gap:4px;justify-items:start}
+.activity-v-row{display:grid;grid-template-columns:40px repeat(7,17px);gap:4px;align-items:center}
+.activity-v-row .activity-cell{width:15px;height:15px;border-radius:4px}
+.activity-v-head b{font-size:9px;color:var(--muted2);text-align:center;font-weight:800}
+.activity-v-month{font-size:9px;color:var(--muted);text-align:right;padding-right:6px;white-space:nowrap}
+.activity-v-foot{display:flex;align-items:center;justify-content:space-between;gap:14px;width:100%;max-width:280px;margin-top:8px}
+.activity-v-foot .text-button{font-size:11px;gap:4px}
+.activity-v-foot .activity-legend{margin-top:0}
+
+/* v1.12 library page on phones */
+@media(max-width:560px){
+  /* The nowrap action row's min-content (409px) forced the shared grid column
+     of .card-details past the screen; every sibling stretched with it. */
+  .card-actions{flex-wrap:wrap;justify-content:flex-start;row-gap:7px}
+  .card-details>*{min-width:0}
+  .card-details{padding:18px 16px 15px}
+  /* Icon-only secondary buttons read as empty pills — restore their labels. */
+  .toolbar-actions .secondary{font-size:12px;gap:7px}
+  .toolbar-actions .secondary svg{margin:0}
+  /* Stack the generator field above its button again: a later wide-screen rule
+     (max-width:1500px, declared after this breakpoint) had re-flattened the
+     one-column layout into a squeezed row. */
+  .generator-panel .generator-input{grid-template-columns:1fr}
+  .generator-input .primary{min-height:46px}
+}
+
 /* v1.11 narrow-mobile corrections */
 /* In a height-capped modal, grid layout steals space only from rows whose items
    may shrink (overflow:auto ⇒ zero minimum). Keep the normalized-terms list at

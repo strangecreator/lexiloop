@@ -287,9 +287,19 @@ function Home({pools,activePool,setActivePool,go,refreshPools}:{pools:Pool[];act
 }
 function dateKey(date:Date){return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`}
 const MONTH_NAMES=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+function useMediaQuery(query:string){
+  const [matches,setMatches]=useState(()=>matchMedia(query).matches)
+  useEffect(()=>{const media=matchMedia(query);const listener=()=>setMatches(media.matches);media.addEventListener('change',listener);return()=>media.removeEventListener('change',listener)},[query])
+  return matches
+}
+const VERTICAL_RECENT_WEEKS=13
 function ActivityHeatmap({rows}:{rows:{day:string;reviews:number}[]}){
+  // Narrow screens get a vertical grid (weeks as rows, most recent on top)
+  // instead of a horizontally scrolling year.
+  const vertical=useMediaQuery('(max-width:820px)')
+  const [expanded,setExpanded]=useState(false)
   const scrollRef=useRef<HTMLDivElement>(null)
-  useEffect(()=>{const el=scrollRef.current;if(el)el.scrollLeft=el.scrollWidth},[rows.length])
+  useEffect(()=>{const el=scrollRef.current;if(el)el.scrollLeft=el.scrollWidth},[rows.length,vertical])
   const byDay=new Map(rows.map(row=>[row.day,row.reviews]))
   const today=new Date();today.setHours(0,0,0,0)
   const start=new Date(today);start.setDate(start.getDate()-364)
@@ -302,6 +312,27 @@ function ActivityHeatmap({rows}:{rows:{day:string;reviews:number}[]}){
   }
   const max=Math.max(1,...rows.map(row=>row.reviews))
   const level=(count:number)=>count===0?0:Math.min(4,Math.max(1,Math.ceil(4*count/max)))
+  const cellTitle=(cell:{date:Date;count:number})=>`${cell.count} review${cell.count===1?'':'s'} on ${cell.date.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}`
+  const legend=<div className="activity-legend"><span>Less</span>{[0,1,2,3,4].map(value=><span key={value} className={`activity-cell level-${value}`}/>)}<span>More</span></div>
+  if(vertical){
+    const recentFirst=[...weeks].reverse()
+    const shown=expanded?recentFirst:recentFirst.slice(0,VERTICAL_RECENT_WEEKS)
+    let lastLabel=''
+    return <div className="activity-vertical" role="img" aria-label="Daily study activity, most recent week first">
+      <div className="activity-v-row activity-v-head"><span className="activity-v-month"/>{['M','T','W','T','F','S','S'].map((day,index)=><b key={index}>{day}</b>)}</div>
+      {shown.map((week,index)=>{
+        const monthStart=week.find(cell=>cell.date.getDate()===1)
+        let label=monthStart?MONTH_NAMES[monthStart.date.getMonth()]:(index===0?MONTH_NAMES[week[week.length-1].date.getMonth()]:'')
+        if(label&&label===lastLabel)label=''
+        if(label)lastLabel=label
+        return <div className="activity-v-row" key={week[0].key}>
+          <span className="activity-v-month">{label}</span>
+          {week.map(cell=><span key={cell.key} className={`activity-cell level-${level(cell.count)}`} title={cellTitle(cell)}/>)}
+        </div>
+      })}
+      <div className="activity-v-foot"><button type="button" className="text-button" onClick={()=>setExpanded(!expanded)}>{expanded?'Show recent weeks':'Show the full year'}<ChevronDown size={14} style={expanded?{transform:'rotate(180deg)'}:undefined}/></button>{legend}</div>
+    </div>
+  }
   const monthLabel=(index:number)=>{
     const month=weeks[index][0].date.getMonth()
     if(index===0)return MONTH_NAMES[month]
@@ -313,11 +344,11 @@ function ActivityHeatmap({rows}:{rows:{day:string;reviews:number}[]}){
       <div className="activity-weekdays"><span>Mon</span><span>Wed</span><span>Fri</span></div>
       <div className="activity-grid" role="img" aria-label="Daily study activity for the last year">
         {weeks.map((week,index)=><div className="activity-week" key={index}>
-          {week.map(cell=><span key={cell.key} className={`activity-cell level-${level(cell.count)}`} title={`${cell.count} review${cell.count===1?'':'s'} on ${cell.date.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}`}/>)}
+          {week.map(cell=><span key={cell.key} className={`activity-cell level-${level(cell.count)}`} title={cellTitle(cell)}/>)}
         </div>)}
       </div>
     </div>
-    <div className="activity-legend"><span>Less</span>{[0,1,2,3,4].map(value=><span key={value} className={`activity-cell level-${value}`}/>)}<span>More</span></div>
+    {legend}
   </div></div>
 }
 function NotFound({onHome}:{onHome:()=>void}){return <div className="center-stage"><Empty icon={<AlertTriangle/>} title="Page not found" text="This address is not part of LexiLoop. Admin, API, and application pages now have separate routes."/><div className="empty-actions"><button className="primary" onClick={onHome}><ArrowRight size={16}/>Return to Overview</button></div></div>}
@@ -338,7 +369,8 @@ async function reviewCurrentCard(cardId:number,payload:Record<string,unknown>){
 
 function Study({activePool,notify}:{activePool:number|null;notify:(m:string,k?:Toast['kind'])=>void}){
   type StudyMode = 'due'|'practice'
-  type StudySession = {card:Card|null;direction:Direction;prompt?:string;message?:string;mode?:StudyMode;practice_complete?:boolean;queue_count?:number;round_total?:number;round_completed?:number}
+  type QueueBreakdown = {new:number;learning:number;review:number}
+  type StudySession = {card:Card|null;direction:Direction;prompt?:string;message?:string;mode?:StudyMode;practice_complete?:boolean;queue_count?:number;round_total?:number;round_completed?:number;queue_breakdown?:QueueBreakdown}
   const [session,setSession]=useState<StudySession|null>(null)
   const [mode,setMode]=useState<StudyMode>('due')
   const [practiceSeen,setPracticeSeen]=useState<number[]>([])
@@ -382,6 +414,16 @@ function Study({activePool,notify}:{activePool:number|null;notify:(m:string,k?:T
     }
   },[card?.id])
   const elapsed=()=>Math.max(0,Date.now()-started)
+  const markReviewed=useCallback((cardId:number)=>{
+    reviewedRef.current=true
+    setReviewed(true)
+    if(mode==='practice'){
+      setPracticeSeen(previous=>previous.includes(cardId)?previous:[...previous,cardId])
+      setRoundCompleted(previous=>practiceSeen.includes(cardId)?previous:previous+1)
+    }else{
+      setRoundCompleted(previous=>previous+1)
+    }
+  },[mode,practiceSeen])
   const recordReview=useCallback(async(result?:JudgeResult|null,measuredOverride?:number)=>{
     if(!card)return false
     if(reviewedRef.current)return true
@@ -393,13 +435,7 @@ function Study({activePool,notify}:{activePool:number|null;notify:(m:string,k?:T
         answer,direction:session?.direction,judge_score:result?.score,judge_verdict:result?.verdict,
         feedback:result?.feedback,accepted:result?.accepted??false,response_ms:measured,practice:mode==='practice',hint_revealed_letters:hintLetters,hint_total_letters:recallLetterCount(card.term)
       })
-      setReviewed(true)
-      if(mode==='practice'){
-        setPracticeSeen(previous=>previous.includes(card.id)?previous:[...previous,card.id])
-        setRoundCompleted(previous=>practiceSeen.includes(card.id)?previous:previous+1)
-      }else{
-        setRoundCompleted(previous=>previous+1)
-      }
+      markReviewed(card.id)
       return true
     }catch(e){
       reviewedRef.current=false
@@ -407,15 +443,21 @@ function Study({activePool,notify}:{activePool:number|null;notify:(m:string,k?:T
       notify((e as Error).message,'error')
       return false
     }finally{setBusy(false)}
-  },[card,answer,session?.direction,responseMs,started,mode,hintLetters,practiceSeen,notify])
+  },[card,answer,session?.direction,responseMs,started,mode,hintLetters,markReviewed,notify])
   const submit=async()=>{
     if(!card||!answer.trim()||busy)return
     const measured=responseMs??elapsed();setResponseMs(measured);setBusy(true)
     try{
-      const result=await api<JudgeResult>(`/study/${card.id}/judge/`,{method:'POST',body:JSON.stringify({answer,direction:session?.direction})},JUDGE_TIMEOUT_MS)
+      // The judge endpoint records the review server-side in the same request;
+      // recordReview remains only as a fallback for a lost lock race.
+      const result=await api<JudgeResult>(`/study/${card.id}/judge/`,{method:'POST',body:JSON.stringify({
+        answer,direction:session?.direction,response_ms:measured,practice:mode==='practice',
+        hint_revealed_letters:hintLetters,hint_total_letters:recallLetterCount(card.term)
+      })},JUDGE_TIMEOUT_MS)
       setJudge(result);if(result.should_reveal)setRevealed(true)
-      await recordReview(result,measured)
-    }catch(e){notify((e as Error).message,'error');setBusy(false)}
+      if(result.review_recorded)markReviewed(card.id)
+      else await recordReview(result,measured)
+    }catch(e){notify((e as Error).message,'error')}finally{setBusy(false)}
   }
   const reveal=()=>{
     if(!card||busy)return
@@ -469,10 +511,12 @@ function Study({activePool,notify}:{activePool:number|null;notify:(m:string,k?:T
   }
   const defMode=session.direction==='term_to_definition'
   const responseTime=responseMs===null?'':humanDuration(responseMs)
-  const total=Math.max(roundTotal,roundCompleted+(session.queue_count??0))
+  const remaining=session.queue_count??0
+  const total=Math.max(roundTotal,roundCompleted+remaining)
   const progress=total?Math.min(100,100*roundCompleted/total):0
+  const breakdown=session.queue_breakdown
   return <div className="study-layout">
-    <div className="study-progress"><div className="study-progress-copy"><span>{mode==='practice'?'Practice round':'Due review round'}</span><small>{roundCompleted} of {total} {mode==='practice'?'pool cards':'scheduled cards'} completed</small></div><div role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={roundCompleted}><i style={{width:`${progress}%`}}/></div><button className="practice-switch" title={mode==='practice'?'Return to cards scheduled as due by spaced repetition':'Study every card once now without changing its due date'} onClick={()=>mode==='practice'?returnToDue():startPractice()}>{mode==='practice'?'Due reviews':'Practice all'}</button></div>
+    <div className="study-progress"><div className="study-progress-copy"><span>{mode==='practice'?'Practice round':'Due review round'}</span><small>{roundCompleted} done · {remaining} left{mode==='practice'?' in this pool':''}</small></div><div className="study-progress-track"><div role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={roundCompleted}><i style={{width:`${progress}%`}}/></div>{mode==='due'&&breakdown&&remaining>0&&<div className="queue-chips" aria-label="Remaining queue composition">{breakdown.new>0&&<span className="qc-new" title={`${breakdown.new} brand-new card${breakdown.new===1?'':'s'} within today's limit`}>{breakdown.new} new</span>}{breakdown.learning>0&&<span className="qc-learning" title={`${breakdown.learning} card${breakdown.learning===1?' is':'s are'} in short learning steps — failed or recently added cards return here`}>{breakdown.learning} learning</span>}{breakdown.review>0&&<span className="qc-review" title={`${breakdown.review} graduated card${breakdown.review===1?'':'s'} scheduled for review today`}>{breakdown.review} review</span>}</div>}</div><button className="practice-switch" title={mode==='practice'?'Return to cards scheduled as due by spaced repetition':'Study every card once now without changing its due date'} onClick={()=>mode==='practice'?returnToDue():startPractice()}>{mode==='practice'?'Due reviews':'Practice all'}</button></div>
     <article ref={cardRef} className={`study-card ${judge?.accepted?'correct':judge&&!judge.accepted?'wrong':''}`}>
       <div className="card-topline"><span>{defMode?'Explain this word':'Recall the word'}</span><span className="state-pill">{mode==='practice'?'practice':card.schedule.state}</span></div>
       <div className="study-prompt">
@@ -486,7 +530,7 @@ function Study({activePool,notify}:{activePool:number|null;notify:(m:string,k?:T
         <div className="answer-reveal"><div className="answer-title-row"><div><h3>{card.term}</h3>{card.ipa&&<small>/{card.ipa}/</small>}</div><button className="answer-audio" onClick={()=>void playPronunciation(card.term).catch(e=>notify((e as Error).message,'error'))}><Volume2 size={17}/>Pronounce</button></div><p>{card.definition}</p><div className="answer-examples">{card.examples?.slice(0,3).map((example,index)=><blockquote key={`${example.sentence}-${index}`}>“{example.sentence}”{example.note&&<small>{example.note}</small>}</blockquote>)}</div>
           {(card.synonyms.length>0||card.collocations.length>0)&&<div className="chip-row">{card.synonyms.slice(0,4).map(x=><span key={x}>{x}</span>)}{card.collocations.slice(0,3).map(x=><span key={x}>{x}</span>)}</div>}
         </div>
-        <div className="next-block"><div className="review-meta"><Clock3 size={16}/><span>{reviewed?'Saved':responseTime||'Answer revealed'}{mode==='practice'?' · Practice':''}</span></div><button className="primary next-task" onClick={next} disabled={busy}>{busy?'Loading…':<>Next task <ArrowRight size={17}/></>}</button></div>
+        <div className="next-block"><div className="review-meta"><Clock3 size={16}/><span>{judge?(responseTime||'Answer checked'):reviewed?'Saved':'Answer revealed'}{mode==='practice'?' · Practice':''}</span></div><button className="primary next-task" onClick={next} disabled={busy}>{busy?'Loading…':<>Next task <ArrowRight size={17}/></>}</button></div>
       </div>}
     </article>
     <div className="study-footer"><span><KeyRound size={14}/> {defMode?'Definitions use a fixed 1–7 semantic rubric.':'Infinitive “to” is optional for verb recall.'}</span><span>⌘/Ctrl − blocks this card · Enter or Right Arrow continues</span></div>
