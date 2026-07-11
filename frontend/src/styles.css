@@ -727,3 +727,6 @@ html:has(.sidebar.open),body:has(.sidebar.open){overflow:hidden}
 .switch i{width:18px;height:18px;border-radius:50%;background:var(--muted);transition:transform .18s,background .18s}
 .switch.on{background:var(--primary);border-color:var(--primary)}
 .switch.on i{transform:translateX(18px);background:#fff}
+
+/* v1.16 the answer block breathes below an image-backed prompt */
+.study-prompt.has-image+.answer-area{padding-top:26px}
