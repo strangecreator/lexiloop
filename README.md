@@ -2,7 +2,7 @@
 
 LexiLoop is a Django + React platform for building and retaining English vocabulary. It combines one-field AI card creation, semantic answer judging, durable high-volume generation, server-side pagination, PostgreSQL storage, HTTPS deployment, and an Anki-inspired review scheduler with a polished responsive interface.
 
-Version **1.18.0** adds direct Anthropic (Claude) API support, per-animation duration controls and a prefetch-depth setting, a gentler watercolor reveal that replays reliably on every card, a readable recall panel over images in light mode, and a proper loading state on Overview.
+Version **1.19.0** makes every numeric field comfortable to edit (free typing while focused, validation on blur), un-clips the pool actions menu on narrow screens, and turns the watercolor droplets animation into a slower opt-in.
 
 ## Highlights
 
@@ -21,6 +21,20 @@ Version **1.18.0** adds direct Anthropic (Claude) API support, per-animation dur
 - Dynamic page titles, cached pronunciation audio, custom favicon, and responsive UI.
 - Dedicated routes: `/overview`, `/study`, `/library`, `/analytics`, `/settings`, `/auth`, `/register`, and `/admin/`.
 - Unknown URLs return a custom LexiLoop 404 page instead of the SPA shell.
+
+## v1.19.0 changes
+
+### Comfortable number fields
+
+All numeric inputs (animation durations, prefetch depth, daily new cards, review timing thresholds, scheduler tuning, bulk concurrency) previously clamped every keystroke against the controlled value, so clearing the field or deleting the first digit instantly snapped the old number back. They now hold free text while focused — valid keystrokes update state immediately, and the display settles to the last valid value on blur.
+
+### Un-clipped pool actions menu
+
+Below 1050px the off-canvas sidebar always carries a CSS transform (which makes it the containing block for `position: fixed`) and scrolls its own overflow, so the pool context menu was mispositioned and truncated inside the panel. The menu now renders in a portal at the document body and floats freely at every width.
+
+### Droplets is opt-in
+
+Watercolor droplets moved to the end of the Reveal animations list, is unchecked by default (existing untouched defaults are migrated; customized selections are preserved), and defaults to 8 seconds when enabled.
 
 ## v1.18.0 changes
 
