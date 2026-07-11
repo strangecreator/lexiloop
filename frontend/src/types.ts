@@ -4,16 +4,16 @@ export interface ModelOption {
 }
 export type Theme = 'dark' | 'light' | 'system'
 export type AccentColor = 'violet' | 'indigo' | 'blue' | 'teal' | 'emerald' | 'rose' | 'orange'
-export type Direction = 'mixed' | 'term_to_definition' | 'definition_to_term' | 'term_to_sentence'
+export type Direction = 'term_to_definition' | 'definition_to_term' | 'term_to_sentence'
 
 export interface Settings {
-  theme: Theme; accent_color: AccentColor; study_direction: Direction; generation_model: string; has_generation_token: boolean;
+  theme: Theme; accent_color: AccentColor; study_directions: Direction[]; generation_model: string; has_generation_token: boolean;
   judge_model: string; has_judge_token: boolean; token_status: Record<string, boolean>;
   image_model: string; has_image_token: boolean; show_card_images: boolean;
   show_images_term_to_definition: boolean; show_images_definition_to_term: boolean; image_animations: string[];
   image_animation_durations: Record<string, number>; image_prefetch_count: number;
-  judge_acceptance_score: number; reveal_threshold: number;
-  sentence_judge_model: string; has_sentence_token: boolean; sentence_acceptance_score: number; sentence_reveal_threshold: number;
+  judge_acceptance_score: number;
+  sentence_judge_model: string; has_sentence_token: boolean; sentence_acceptance_score: number;
   show_images_term_to_sentence: boolean;
   daily_new_limit: number; learning_steps_minutes: number[]; relearning_steps_minutes: number[];
   graduating_interval_days: number; easy_interval_days: number; easy_bonus: number;
@@ -32,7 +32,7 @@ export interface Card {
   has_image:boolean; image_key:string;
   schedule:Schedule; created_at:string; updated_at:string;
 }
-export interface JudgeResult {grading:'binary'|'ordinal'; score:number; verdict:string; feedback:string; matched_concepts:string[]; missing_or_wrong_concepts:string[]; accepted:boolean; should_reveal:boolean; review_recorded?:boolean}
+export interface JudgeResult {grading:'binary'|'ordinal'; score:number; verdict:string; feedback:string; matched_concepts:string[]; missing_or_wrong_concepts:string[]; accepted:boolean; review_recorded?:boolean}
 export interface Overview {total_cards:number; due_now:number; new_cards:number; reviews_today:number; retention:number; streak:number; activity:{day:string;reviews:number}[]}
 export interface Analytics {
   daily:{day:string;cost:number;tokens:number;calls:number}[];
