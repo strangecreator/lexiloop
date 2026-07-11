@@ -2,7 +2,7 @@
 
 LexiLoop is a Django + React platform for building and retaining English vocabulary. It combines one-field AI card creation, semantic answer judging, durable high-volume generation, server-side pagination, PostgreSQL storage, HTTPS deployment, and an Anki-inspired review scheduler with a polished responsive interface.
 
-Version **1.17.0** refines flashcard images: organic watercolor-style reveal animations (user-selectable), portrait pictures floating beside the text as soft-edged panes, a luminance-adaptive scrim for bright images, per-direction visibility switches, and a fix for stale images after replacement.
+Version **1.18.0** adds direct Anthropic (Claude) API support, per-animation duration controls and a prefetch-depth setting, a gentler watercolor reveal that replays reliably on every card, a readable recall panel over images in light mode, and a proper loading state on Overview.
 
 ## Highlights
 
@@ -21,6 +21,25 @@ Version **1.17.0** refines flashcard images: organic watercolor-style reveal ani
 - Dynamic page titles, cached pronunciation audio, custom favicon, and responsive UI.
 - Dedicated routes: `/overview`, `/study`, `/library`, `/analytics`, `/settings`, `/auth`, `/register`, and `/admin/`.
 - Unknown URLs return a custom LexiLoop 404 page instead of the SPA shell.
+
+## v1.18.0 changes
+
+### Claude models via the direct Anthropic API
+
+The router supports the `anthropic:` prefix (`https://api.anthropic.com/v1/messages`). Settings offers **Claude Haiku 4.5** (fast, cheap — a great judge), **Claude Sonnet 5** (balanced), and **Claude Opus 4.8** (most capable) under a new Anthropic API key provider. The provider handles Anthropic's payload shape (top-level `system`, required `max_tokens`) and strips sampling parameters on models that reject them.
+
+### Animation and prefetch controls
+
+- Each reveal animation in Settings → Card images now has a **duration** field (0.5–30s).
+- **Prefetch upcoming images** controls how many of the next flashcards' images load in advance (0–10, default 2 — as before).
+
+### Fixes and polish
+
+- The reveal animation plays on **every** "Next task": prefetched cards resolved so fast that the visual layer never re-rendered, so roughly half the reveals skipped their animation. The layer is now remounted per card.
+- Watercolor droplets are gentler: drops swell steadily out of a soft haze that sharpens over the run (default 5.2s) instead of appearing abruptly.
+- Light mode: the recall-hints box is a frosted panel over the image, keeping collocation chips and example sentences dark and readable.
+- Overview shows a loading spinner until data arrives instead of flashing zeros.
+- Library card images were confirmed lazy — a card's image loads only when that card is expanded.
 
 ## v1.17.0 changes
 
