@@ -31,6 +31,9 @@ class ScheduleSerializer(serializers.ModelSerializer):
 class FlashcardSerializer(serializers.ModelSerializer):
     schedule = ScheduleSerializer(read_only=True)
     pool_name = serializers.CharField(source='pool.name', read_only=True)
+    has_image = serializers.SerializerMethodField()
+    # Opaque cache key: changes whenever a new image file is stored.
+    image_key = serializers.SerializerMethodField()
 
     class Meta:
         model = Flashcard
@@ -38,9 +41,15 @@ class FlashcardSerializer(serializers.ModelSerializer):
             'id', 'pool', 'pool_name', 'term', 'normalized_term', 'part_of_speech', 'ipa',
             'short_definition', 'definition', 'examples', 'forms', 'synonyms', 'antonyms',
             'collocations', 'usage_notes', 'aliases', 'source_payload', 'suspended',
-            'schedule', 'created_at', 'updated_at',
+            'has_image', 'image_key', 'schedule', 'created_at', 'updated_at',
         ]
         read_only_fields = ['normalized_term', 'created_at', 'updated_at']
+
+    def get_has_image(self, obj):
+        return bool(obj.image)
+
+    def get_image_key(self, obj):
+        return obj.image.name if obj.image else ''
 
     def validate_pool(self, value):
         request = self.context['request']
@@ -152,12 +161,14 @@ class ProfileSerializer(serializers.ModelSerializer):
     token_status = serializers.SerializerMethodField()
     has_generation_token = serializers.SerializerMethodField()
     has_judge_token = serializers.SerializerMethodField()
+    has_image_token = serializers.SerializerMethodField()
 
     class Meta:
         model = UserProfile
         fields = [
             'theme', 'accent_color', 'study_direction', 'generation_model', 'has_generation_token',
-            'judge_model', 'has_judge_token', 'provider_tokens', 'token_status',
+            'judge_model', 'has_judge_token', 'image_model', 'has_image_token', 'show_card_images',
+            'provider_tokens', 'token_status',
             'judge_acceptance_score', 'reveal_threshold',
             'daily_new_limit', 'learning_steps_minutes', 'relearning_steps_minutes',
             'graduating_interval_days', 'easy_interval_days', 'easy_bonus', 'hard_multiplier',
@@ -181,6 +192,9 @@ class ProfileSerializer(serializers.ModelSerializer):
     def get_has_judge_token(self, obj):
         return self._has_provider_token(obj, obj.judge_model)
 
+    def get_has_image_token(self, obj):
+        return self._has_provider_token(obj, obj.image_model or obj.generation_model)
+
     def validate_provider_tokens(self, value):
         unknown = sorted(set(value) - set(TOKEN_PROVIDERS))
         if unknown:
@@ -194,6 +208,12 @@ class ProfileSerializer(serializers.ModelSerializer):
 
     def validate_judge_model(self, value):
         if not is_supported_model(value):
+            raise serializers.ValidationError('Choose one of the public models offered by LexiLoop.')
+        return value
+
+    def validate_image_model(self, value):
+        # Empty string means "use the generation model".
+        if value and not is_supported_model(value):
             raise serializers.ValidationError('Choose one of the public models offered by LexiLoop.')
         return value
 

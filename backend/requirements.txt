@@ -12,3 +12,4 @@ requests>=2.31,<3
 edge-tts>=7.2,<8
 wordfreq>=3.1,<4
 pyspellchecker>=0.8,<1
+Pillow>=10,<12

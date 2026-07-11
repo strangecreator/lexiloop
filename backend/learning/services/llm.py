@@ -61,8 +61,48 @@ Score scale:
 Do not use probabilities or decimal scores.'''
 
 
+def image_model_for(profile: UserProfile) -> str:
+    return profile.image_model or profile.generation_model
+
+
+IMAGE_SYSTEM_PROMPT = '''You help a vocabulary app attach an illustrative image to a flashcard.
+You receive the flashcard term, the web page URL the user pasted, the page title, and candidate image URLs extracted from that page.
+Pick the single candidate most likely to be the page's main, full-size image relevant to the term. Avoid logos, icons, avatars, UI sprites, tracking pixels, and small thumbnails when a larger variant of the same image exists.
+If no candidate fits but the page URL itself embeds a recognizable direct image link (for example in a query parameter), return that.
+Return exactly one JSON object and no Markdown: {"image_url": "https://direct-image-url" or null, "reason": "one short sentence"}'''
+
+
+def resolve_image_url(*, user, profile: UserProfile, card: Flashcard, page_url: str, title: str, candidates: list[str]) -> str:
+    """Ask the image-assistant model which candidate URL is the picture to use."""
+    model = image_model_for(profile)
+    token = _token(profile, LlmUsage.Operation.IMAGE)
+    payload = {'term': card.term, 'page_url': page_url, 'page_title': title, 'candidate_image_urls': candidates}
+    messages = [
+        {'role': 'system', 'content': IMAGE_SYSTEM_PROMPT},
+        {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)},
+    ]
+    try:
+        result = asyncio.run(_deadline(_post(model, token, messages, attempts=1), settings.IMAGE_TOTAL_DEADLINE_SECONDS, 'image lookup'))
+        content = result.get('content')
+        if not isinstance(content, str):
+            raise LlmResponseError('The model response has no textual content.')
+        found = _parse_object(content).get('image_url')
+        if not isinstance(found, str) or not found.startswith(('http://', 'https://')):
+            raise LlmResponseError('The model could not find a usable image on that page.')
+        log_usage(user=user, pool=card.pool, card=card, operation=LlmUsage.Operation.IMAGE, model=model, result=result)
+        return found
+    except Exception as exc:
+        log_usage(user=user, pool=card.pool, card=card, operation=LlmUsage.Operation.IMAGE, model=model, error=str(exc))
+        _public_error(exc)
+
+
 def _token(profile: UserProfile, operation: str) -> str | None:
-    model = profile.generation_model if operation == LlmUsage.Operation.GENERATION else profile.judge_model
+    if operation == LlmUsage.Operation.JUDGING:
+        model = profile.judge_model
+    elif operation == LlmUsage.Operation.IMAGE:
+        model = image_model_for(profile)
+    else:
+        model = profile.generation_model
     provider = token_provider_for(model)
     encrypted = (profile.provider_tokens_encrypted or {}).get(provider, '')
     token = decrypt_secret(encrypted)

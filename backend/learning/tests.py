@@ -890,3 +890,165 @@ class OverviewAndRoundProgressTests(ApiBase):
         self.assertEqual(response.data['round_total'], 2)
         self.assertEqual(response.data['round_completed'], 1)
         self.assertEqual(response.data['queue_count'], 1)
+
+
+def _png_bytes(width=200, height=140, color=(90, 160, 120)):
+    import io
+
+    from PIL import Image
+    buffer = io.BytesIO()
+    Image.new('RGB', (width, height), color).save(buffer, format='PNG')
+    return buffer.getvalue()
+
+
+@override_settings(MEDIA_ROOT='/tmp/lexiloop-test-media')
+class CardImageTests(ApiBase):
+    def upload(self, card, **extra):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        upload = SimpleUploadedFile('photo.png', _png_bytes(), content_type='image/png')
+        return self.client.post(f'/api/flashcards/{card.id}/image/', {'file': upload}, format='multipart', **extra)
+
+    def test_upload_stores_reencoded_image_and_thumbnail(self):
+        card = self.card()
+        response = self.upload(card)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data['has_image'])
+        self.assertTrue(response.data['image_key'])
+        self.assertEqual(response.data['image_source'], 'upload')
+        card.refresh_from_db()
+        self.assertTrue(card.image.name.endswith('.jpg'))
+        self.assertTrue(card.image_thumb.name.endswith('.thumb.jpg'))
+        full = self.client.get(f'/api/flashcards/{card.id}/image/')
+        self.assertEqual(full.status_code, 200)
+        self.assertEqual(full['Content-Type'], 'image/jpeg')
+        thumb = self.client.get(f'/api/flashcards/{card.id}/image/?size=thumb')
+        self.assertEqual(thumb.status_code, 200)
+
+    def test_delete_removes_files_and_flags(self):
+        card = self.card()
+        self.upload(card)
+        card.refresh_from_db()
+        stored = Path(card.image.path)
+        response = self.client.delete(f'/api/flashcards/{card.id}/image/')
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data['has_image'])
+        self.assertFalse(stored.exists())
+        self.assertEqual(self.client.get(f'/api/flashcards/{card.id}/image/').status_code, 404)
+
+    def test_replacing_image_deletes_the_previous_files(self):
+        card = self.card()
+        self.upload(card)
+        card.refresh_from_db()
+        first = Path(card.image.path)
+        self.upload(card)
+        card.refresh_from_db()
+        self.assertFalse(first.exists())
+        self.assertTrue(Path(card.image.path).exists())
+
+    def test_other_users_cards_are_not_reachable(self):
+        stranger = User.objects.create_user(username='stranger', password='pass-123456')
+        UserProfile.objects.create(user=stranger)
+        their_pool = Pool.objects.create(user=stranger, name='Theirs')
+        their_card = Flashcard.objects.create(pool=their_pool, term='secret', short_definition='x', definition='x')
+        self.assertEqual(self.upload(their_card).status_code, 404)
+        self.assertEqual(self.client.get(f'/api/flashcards/{their_card.id}/image/').status_code, 404)
+
+    def test_direct_image_link_is_downloaded(self):
+        card = self.card()
+        with patch('learning.services.images.download_image', return_value=_png_bytes()) as fetch:
+            response = self.client.post(f'/api/flashcards/{card.id}/image/', {'url': 'https://example.com/pic.jpg'}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['image_source'], 'link')
+        fetch.assert_called_once_with('https://example.com/pic.jpg')
+
+    def test_page_link_falls_back_to_llm_choice(self):
+        from learning.services.images import ImageError
+        card = self.card()
+        chosen = 'https://cdn.example.com/real.jpg'
+        downloads = {'https://example.com/page': ImageError('The link points to a web page, not an image file.')}
+
+        def fake_download(url):
+            problem = downloads.get(url)
+            if problem:
+                raise problem
+            return _png_bytes()
+
+        with patch('learning.services.images.download_image', side_effect=fake_download), \
+                patch('learning.services.images.page_image_candidates', return_value=('Title', [chosen, 'https://x/logo.svg'])), \
+                patch('learning.views.resolve_image_url', return_value=chosen) as resolver:
+            response = self.client.post(f'/api/flashcards/{card.id}/image/', {'url': 'https://example.com/page'}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['image_source'], 'ai')
+        self.assertEqual(resolver.call_args.kwargs['page_url'], 'https://example.com/page')
+        self.assertEqual(resolver.call_args.kwargs['candidates'], [chosen, 'https://x/logo.svg'])
+
+    def test_unusable_link_returns_a_clear_error(self):
+        from learning.services.images import ImageError
+        card = self.card()
+        with patch('learning.services.images.download_image', side_effect=ImageError('The link answered with HTTP 404.')), \
+                patch('learning.services.images.page_image_candidates', side_effect=ImageError('nope')):
+            response = self.client.post(f'/api/flashcards/{card.id}/image/', {'url': 'https://example.com/missing'}, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('HTTP 404', response.data['detail'])
+
+    def test_tiny_images_are_rejected(self):
+        card = self.card()
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        upload = SimpleUploadedFile('dot.png', _png_bytes(width=8, height=8), content_type='image/png')
+        response = self.client.post(f'/api/flashcards/{card.id}/image/', {'file': upload}, format='multipart')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('too small', response.data['detail'])
+
+
+class ImageUrlExtractionTests(TestCase):
+    def test_yandex_google_bing_wrappers_are_unwrapped(self):
+        from learning.services.images import extract_direct_url
+        direct = 'https://cdn.host.com/photo.jpg'
+        from urllib.parse import quote
+        cases = [
+            f'https://yandex.ru/images/search?pos=3&img_url={quote(direct, safe="")}&rpt=simage',
+            f'https://www.google.com/imgres?imgurl={quote(direct, safe="")}&imgrefurl=https%3A%2F%2Fhost.com',
+            f'https://www.bing.com/images/search?view=detailV2&mediaurl={quote(direct, safe="")}',
+        ]
+        for wrapped in cases:
+            self.assertEqual(extract_direct_url(wrapped), direct)
+        self.assertEqual(extract_direct_url(direct), direct)
+
+    def test_private_hosts_are_rejected(self):
+        from learning.services.images import ImageError, _check_host
+        for url in ('http://127.0.0.1/x.jpg', 'http://localhost/x.jpg', 'http://192.168.1.10/x.jpg', 'ftp://host/x.jpg'):
+            with self.assertRaises(ImageError):
+                _check_host(url)
+
+
+@override_settings(MEDIA_ROOT='/tmp/lexiloop-test-media')
+class ImageSettingsAndStudyTests(ApiBase):
+    def test_settings_expose_and_validate_image_fields(self):
+        response = self.client.get('/api/settings/')
+        self.assertEqual(response.data['image_model'], '')
+        self.assertTrue(response.data['show_card_images'])
+        self.assertIn('has_image_token', response.data)
+        bad = self.client.patch('/api/settings/', {'image_model': 'external:not-a-model'}, format='json')
+        self.assertEqual(bad.status_code, 400)
+        good = self.client.patch('/api/settings/', {'image_model': 'openai:gpt-5.4-mini', 'show_card_images': False}, format='json')
+        self.assertEqual(good.status_code, 200)
+        self.assertEqual(good.data['image_model'], 'openai:gpt-5.4-mini')
+        self.assertFalse(good.data['show_card_images'])
+
+    def test_study_next_reports_upcoming_images_for_prefetch(self):
+        from learning.services import images as image_service
+        first = self.card('first')
+        second = self.card('second')
+        third = self.card('third')
+        image_service.store_card_image(second, _png_bytes())
+        image_service.store_card_image(third, _png_bytes(color=(20, 40, 60)))
+        response = self.client.get(f'/api/study/next/?pool={self.pool.id}&mode=due')
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data['show_images'])
+        served = response.data['card']['id']
+        upcoming_ids = [item['id'] for item in response.data['upcoming_images']]
+        self.assertNotIn(served, upcoming_ids)
+        expected = [card.id for card in (first, second, third) if card.id != served and card.id in (second.id, third.id)]
+        self.assertEqual(upcoming_ids, expected[:2])
+        for item in response.data['upcoming_images']:
+            self.assertTrue(item['image_key'])

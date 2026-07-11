@@ -22,7 +22,9 @@ from rest_framework.views import APIView
 from learning.models import BulkGenerationItem, BulkGenerationJob, CardSchedule, Flashcard, LlmUsage, Pool, ReviewLog, UserProfile
 from learning.serializers import BulkGenerationJobSerializer, FlashcardSerializer, PoolSerializer, ProfileSerializer, RegisterSerializer
 from learning.services.english import InvalidEnglishTerm, normalize_bulk_terms, validate_english_term
-from learning.services.llm import generate_flashcard, judge_definition
+from learning.services import images as image_service
+from learning.services.images import ImageError
+from learning.services.llm import generate_flashcard, judge_definition, resolve_image_url
 from learning.services.pronunciation import PronunciationError, generate_pronunciation
 from learning.services.model_catalog import model_catalog
 from learning.services.scheduler import apply_rating, automatic_rating, priority
@@ -180,6 +182,57 @@ class FlashcardViewSet(viewsets.ModelViewSet):
         card.save(update_fields=['suspended', 'updated_at'])
         return Response(FlashcardSerializer(card, context={'request': request}).data)
 
+    @action(detail=True, methods=['get', 'post', 'delete'])
+    def image(self, request, pk=None):
+        card = self.get_object()
+        if request.method == 'GET':
+            field = card.image_thumb if request.query_params.get('size') == 'thumb' else card.image
+            if not field:
+                return Response({'detail': 'This card has no image.'}, status=404)
+            response = FileResponse(field.open('rb'), content_type='image/jpeg')
+            response['Cache-Control'] = 'private, max-age=31536000, immutable'
+            return response
+        if request.method == 'DELETE':
+            image_service.remove_card_image(card)
+            return Response(FlashcardSerializer(card, context={'request': request}).data)
+        upload = request.FILES.get('file')
+        url = str(request.data.get('url') or '').strip()
+        source = 'upload'
+        try:
+            if upload:
+                if upload.size > image_service.MAX_UPLOAD_BYTES:
+                    raise ImageError('The file is larger than 12 MB.')
+                data = upload.read()
+            elif url:
+                data, source = self._image_from_url(request, card, url)
+            else:
+                return Response({'detail': 'Send an image file or an image link.'}, status=400)
+            image_service.store_card_image(card, data)
+        except ImageError as exc:
+            return Response({'detail': str(exc), 'code': 'image_failure'}, status=400)
+        payload = FlashcardSerializer(card, context={'request': request}).data
+        payload['image_source'] = source
+        return Response(payload)
+
+    @staticmethod
+    def _image_from_url(request, card, url):
+        try:
+            return image_service.download_image(url), 'link'
+        except ImageError as direct_error:
+            # The link is a page, not a picture. Read the page and let the
+            # image-assistant model choose among the images found on it.
+            try:
+                title, candidates = image_service.page_image_candidates(url)
+            except ImageError:
+                raise direct_error
+            if not candidates:
+                raise direct_error
+            found = resolve_image_url(
+                user=request.user, profile=profile_for(request.user), card=card,
+                page_url=url, title=title, candidates=candidates,
+            )
+            return image_service.download_image(found), 'ai'
+
 
 class GenerateView(APIView):
     def post(self, request):
@@ -300,6 +353,11 @@ def _direction(profile, card):
     return (ReviewLog.Direction.TERM_TO_DEFINITION if (card.id + card.schedule.repetitions) % 2 else ReviewLog.Direction.DEFINITION_TO_TERM)
 
 
+def _upcoming_images(cards, limit=2):
+    """The next queue cards that have images, so the client can prefetch them."""
+    return [{'id': c.id, 'image_key': c.image.name} for c in cards if c.image][:limit]
+
+
 class NextCardView(APIView):
     def get(self, request):
         profile = profile_for(request.user)
@@ -334,10 +392,8 @@ class NextCardView(APIView):
                     'round_total': total_count,
                     'round_completed': completed_count,
                 })
-            card = min(
-                cards,
-                key=lambda c: (c.schedule.last_reviewed_at or c.created_at, c.id),
-            )
+            ordered = sorted(cards, key=lambda c: (c.schedule.last_reviewed_at or c.created_at, c.id))
+            card = ordered[0]
             direction = _direction(profile, card)
             payload = FlashcardSerializer(card, context={'request': request}).data
             prompt = card.term if direction == ReviewLog.Direction.TERM_TO_DEFINITION else card.short_definition
@@ -345,6 +401,8 @@ class NextCardView(APIView):
                 'card': payload, 'direction': direction, 'prompt': prompt, 'mode': mode,
                 'queue_count': len(cards), 'round_total': total_count,
                 'round_completed': completed_count,
+                'show_images': profile.show_card_images,
+                'upcoming_images': _upcoming_images(ordered[1:]),
             })
 
         cards = due_cards(base_cards, user=request.user, profile=profile, now=now)
@@ -366,7 +424,8 @@ class NextCardView(APIView):
             else:
                 breakdown['learning'] += 1
         rank = {CardSchedule.State.RELEARNING: 4, CardSchedule.State.LEARNING: 3, CardSchedule.State.REVIEW: 2, CardSchedule.State.NEW: 1}
-        card = max(cards, key=lambda c: (rank.get(c.schedule.state, 0), priority(c.schedule, now)))
+        ordered = sorted(cards, key=lambda c: (rank.get(c.schedule.state, 0), priority(c.schedule, now)), reverse=True)
+        card = ordered[0]
         direction = _direction(profile, card)
         payload = FlashcardSerializer(card, context={'request': request}).data
         prompt = card.term if direction == ReviewLog.Direction.TERM_TO_DEFINITION else card.short_definition
@@ -374,6 +433,8 @@ class NextCardView(APIView):
             'card': payload, 'direction': direction, 'prompt': prompt, 'mode': mode,
             'queue_count': len(cards),
             'queue_breakdown': breakdown,
+            'show_images': profile.show_card_images,
+            'upcoming_images': _upcoming_images(ordered[1:]),
         })
 
 

@@ -42,6 +42,9 @@ class UserProfile(models.Model):
     study_direction = models.CharField(max_length=32, choices=Direction.choices, default=Direction.MIXED)
     generation_model = models.CharField(max_length=200, default='external:deepseek-chat')
     judge_model = models.CharField(max_length=200, default='external:deepseek-chat')
+    # Empty string means "use the generation model" for image-lookup assistance.
+    image_model = models.CharField(max_length=200, blank=True, default='')
+    show_card_images = models.BooleanField(default=True)
     # Encrypted API keys keyed by token provider ('deepseek', 'openai', …), so a
     # saved key survives switching between models of the same provider.
     provider_tokens_encrypted = models.JSONField(default=dict, blank=True)
@@ -109,6 +112,8 @@ class Flashcard(models.Model):
     usage_notes = models.TextField(blank=True)
     aliases = models.JSONField(default=list, blank=True)
     source_payload = models.JSONField(default=dict, blank=True)
+    image = models.FileField(upload_to='cards/', blank=True, default='')
+    image_thumb = models.FileField(upload_to='cards/thumbs/', blank=True, default='')
     suspended = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -198,6 +203,7 @@ class LlmUsage(models.Model):
         GENERATION = 'generation', 'Generation'
         BULK_GENERATION = 'bulk_generation', 'Bulk generation'
         JUDGING = 'judging', 'Judging'
+        IMAGE = 'image', 'Image lookup'
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='llm_usage')
     pool = models.ForeignKey(Pool, on_delete=models.SET_NULL, null=True, blank=True, related_name='llm_usage')
