@@ -511,10 +511,15 @@ function Study({activePool,notify}:{activePool:number|null;notify:(m:string,k?:T
   }
   const defMode=session.direction==='term_to_definition'
   const responseTime=responseMs===null?'':humanDuration(responseMs)
-  const remaining=session.queue_count??0
+  // queue_count and queue_breakdown were counted with the on-screen card still
+  // in the queue; once its review is saved they are one card stale.
+  const remaining=Math.max(0,(session.queue_count??0)-(reviewed?1:0))
   const total=Math.max(roundTotal,roundCompleted+remaining)
   const progress=total?Math.min(100,100*roundCompleted/total):0
-  const breakdown=session.queue_breakdown
+  const servedAs=card.schedule.state==='new'?'new':card.schedule.state==='review'?'review':'learning'
+  const breakdown=session.queue_breakdown&&reviewed
+    ?{...session.queue_breakdown,[servedAs]:Math.max(0,session.queue_breakdown[servedAs]-1)}
+    :session.queue_breakdown
   return <div className="study-layout">
     <div className="study-progress"><div className="study-progress-copy"><span>{mode==='practice'?'Practice round':'Due review round'}</span><small>{roundCompleted} done · {remaining} left{mode==='practice'?' in this pool':''}</small></div><div className="study-progress-track"><div role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={roundCompleted}><i style={{width:`${progress}%`}}/></div>{mode==='due'&&breakdown&&remaining>0&&<div className="queue-chips" aria-label="Remaining queue composition">{breakdown.new>0&&<span className="qc-new" title={`${breakdown.new} brand-new card${breakdown.new===1?'':'s'} within today's limit`}>{breakdown.new} new</span>}{breakdown.learning>0&&<span className="qc-learning" title={`${breakdown.learning} card${breakdown.learning===1?' is':'s are'} in short learning steps — failed or recently added cards return here`}>{breakdown.learning} learning</span>}{breakdown.review>0&&<span className="qc-review" title={`${breakdown.review} graduated card${breakdown.review===1?'':'s'} scheduled for review today`}>{breakdown.review} review</span>}</div>}</div><button className="practice-switch" title={mode==='practice'?'Return to cards scheduled as due by spaced repetition':'Study every card once now without changing its due date'} onClick={()=>mode==='practice'?returnToDue():startPractice()}>{mode==='practice'?'Due reviews':'Practice all'}</button></div>
     <article ref={cardRef} className={`study-card ${judge?.accepted?'correct':judge&&!judge.accepted?'wrong':''}`}>
