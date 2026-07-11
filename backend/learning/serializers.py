@@ -169,6 +169,7 @@ class ProfileSerializer(serializers.ModelSerializer):
             'theme', 'accent_color', 'study_direction', 'generation_model', 'has_generation_token',
             'judge_model', 'has_judge_token', 'image_model', 'has_image_token', 'show_card_images',
             'show_images_term_to_definition', 'show_images_definition_to_term', 'image_animations',
+            'image_animation_durations', 'image_prefetch_count',
             'provider_tokens', 'token_status',
             'judge_acceptance_score', 'reveal_threshold',
             'daily_new_limit', 'learning_steps_minutes', 'relearning_steps_minutes',
@@ -226,6 +227,23 @@ class ProfileSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(f"Unknown animation: {', '.join(unknown)}.")
         # Preserve the canonical order and drop duplicates.
         return [name for name in IMAGE_ANIMATIONS if name in value]
+
+    def validate_image_animation_durations(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError('Provide a mapping of animation name to seconds.')
+        unknown = sorted(set(value) - set(IMAGE_ANIMATIONS))
+        if unknown:
+            raise serializers.ValidationError(f"Unknown animation: {', '.join(unknown)}.")
+        cleaned = {}
+        for name, seconds in value.items():
+            try:
+                seconds = round(float(seconds), 1)
+            except (TypeError, ValueError):
+                raise serializers.ValidationError(f'{name}: the duration must be a number of seconds.')
+            if not 0.5 <= seconds <= 30:
+                raise serializers.ValidationError(f'{name}: the duration must be between 0.5 and 30 seconds.')
+            cleaned[name] = seconds
+        return cleaned
 
     def validate_learning_steps_minutes(self, value):
         return self._validate_steps(value)

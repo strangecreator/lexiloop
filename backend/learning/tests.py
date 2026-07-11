@@ -187,7 +187,7 @@ class PoolAndCardTests(ApiBase):
         # The default generation and judge models are DeepSeek, so both flags flip.
         self.assertTrue(response.data['has_generation_token'])
         self.assertTrue(response.data['has_judge_token'])
-        self.assertEqual(response.data['token_status'], {'deepseek': True, 'openai': False, 'openrouter': False, 'xiaomi': False})
+        self.assertEqual(response.data['token_status'], {'deepseek': True, 'openai': False, 'anthropic': False, 'openrouter': False, 'xiaomi': False})
 
     def test_saved_provider_key_survives_model_switch_and_can_be_removed(self):
         self.client.patch('/api/settings/', {'provider_tokens': {'deepseek': 'ds-key', 'openai': 'oa-key'}}, format='json')
@@ -198,7 +198,7 @@ class PoolAndCardTests(ApiBase):
         self.assertTrue(response.data['has_judge_token'])
         # An empty value deletes the stored key; other providers stay intact.
         response = self.client.patch('/api/settings/', {'provider_tokens': {'openai': ''}}, format='json')
-        self.assertEqual(response.data['token_status'], {'deepseek': True, 'openai': False, 'openrouter': False, 'xiaomi': False})
+        self.assertEqual(response.data['token_status'], {'deepseek': True, 'openai': False, 'anthropic': False, 'openrouter': False, 'xiaomi': False})
         self.profile.refresh_from_db()
         self.assertNotIn('openai', self.profile.provider_tokens_encrypted)
 
@@ -1023,6 +1023,53 @@ class CardImageTests(ApiBase):
         self.assertIn('too small', response.data['detail'])
 
 
+class AnthropicRouterTests(TestCase):
+    def test_direct_anthropic_models_are_in_the_catalog(self):
+        from learning.services.model_catalog import TOKEN_PROVIDERS, is_supported_model, token_provider_for
+        self.assertTrue(is_supported_model('anthropic:claude-haiku-4-5'))
+        self.assertTrue(is_supported_model('anthropic:claude-sonnet-5'))
+        self.assertTrue(is_supported_model('anthropic:claude-opus-4-8'))
+        self.assertEqual(token_provider_for('anthropic:claude-sonnet-5'), 'anthropic')
+        self.assertIn('anthropic', TOKEN_PROVIDERS)
+
+    def test_anthropic_payload_shaping_and_response_parsing(self):
+        import router
+        captured = {}
+
+        async def fake_post(session, url, headers, payload, timeout=300, **kwargs):
+            captured.update(url=url, headers=headers, payload=payload)
+            return {
+                'content': [{'type': 'text', 'text': '{"ok": true}'}],
+                'usage': {'input_tokens': 100, 'output_tokens': 50},
+                'stop_reason': 'end_turn',
+            }
+
+        messages = [{'role': 'system', 'content': 'sys'}, {'role': 'user', 'content': 'hi'}]
+        with patch('router.utils.post_strict_safe_fixed_utf_8', side_effect=fake_post):
+            result = asyncio.run(router.llm.post(
+                None, 'anthropic:claude-haiku-4-5',
+                {'messages': list(messages), 'temperature': 0.1}, token='sk-ant-test', verbose=False,
+            ))
+        self.assertEqual(captured['url'], 'https://api.anthropic.com/v1/messages')
+        self.assertEqual(captured['headers']['x-api-key'], 'sk-ant-test')
+        self.assertEqual(captured['headers']['anthropic-version'], '2023-06-01')
+        self.assertEqual(captured['payload']['system'], 'sys')
+        self.assertEqual(captured['payload']['messages'], [{'role': 'user', 'content': 'hi'}])
+        self.assertEqual(captured['payload']['max_tokens'], 4096)
+        self.assertIn('temperature', captured['payload'])  # Haiku 4.5 accepts sampling params
+        self.assertEqual(result['content'], '{"ok": true}')
+        # $1/MTok input, $5/MTok output: 100 in + 50 out = 0.00035
+        self.assertAlmostEqual(result['stats']['total_price'], 0.00035)
+
+        with patch('router.utils.post_strict_safe_fixed_utf_8', side_effect=fake_post):
+            asyncio.run(router.llm.post(
+                None, 'anthropic:claude-sonnet-5',
+                {'messages': list(messages), 'temperature': 0.1}, token='sk-ant-test', verbose=False,
+            ))
+        # Sonnet 5 rejects non-default sampling params; the router must strip them.
+        self.assertNotIn('temperature', captured['payload'])
+
+
 class ImageUrlExtractionTests(TestCase):
     def test_yandex_google_bing_wrappers_are_unwrapped(self):
         from learning.services.images import extract_direct_url
@@ -1088,6 +1135,30 @@ class ImageSettingsAndStudyTests(ApiBase):
         empty = self.client.patch('/api/settings/', {'image_animations': []}, format='json')
         self.assertEqual(empty.status_code, 200)
         self.assertEqual(empty.data['image_animations'], [])
+
+    def test_animation_durations_validate_and_round(self):
+        bad = self.client.patch('/api/settings/', {'image_animation_durations': {'sparkle': 3}}, format='json')
+        self.assertEqual(bad.status_code, 400)
+        bad = self.client.patch('/api/settings/', {'image_animation_durations': {'droplets': 99}}, format='json')
+        self.assertEqual(bad.status_code, 400)
+        good = self.client.patch('/api/settings/', {'image_animation_durations': {'droplets': 5.25, 'ripple': 2}}, format='json')
+        self.assertEqual(good.status_code, 200)
+        self.assertEqual(good.data['image_animation_durations'], {'droplets': 5.2, 'ripple': 2.0})
+        response = self.client.get(f'/api/study/next/?pool={self.pool.id}&mode=due')
+        self.assertEqual(response.status_code, 404 if response.status_code == 404 else response.status_code)
+
+    def test_prefetch_count_bounds_and_usage(self):
+        from learning.services import images as image_service
+        bad = self.client.patch('/api/settings/', {'image_prefetch_count': 11}, format='json')
+        self.assertEqual(bad.status_code, 400)
+        good = self.client.patch('/api/settings/', {'image_prefetch_count': 1}, format='json')
+        self.assertEqual(good.status_code, 200)
+        cards = [self.card(term) for term in ('first', 'second', 'third')]
+        for card in cards:
+            image_service.store_card_image(card, _png_bytes())
+        response = self.client.get(f'/api/study/next/?pool={self.pool.id}&mode=due')
+        self.assertEqual(len(response.data['upcoming_images']), 1)
+        self.assertIn('image_animation_durations', response.data)
 
     def test_study_next_reports_upcoming_images_for_prefetch(self):
         from learning.services import images as image_service

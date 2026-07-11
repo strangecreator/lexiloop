@@ -56,6 +56,9 @@ class UserProfile(models.Model):
     show_images_term_to_definition = models.BooleanField(default=True)
     show_images_definition_to_term = models.BooleanField(default=True)
     image_animations = models.JSONField(default=default_image_animations, blank=True)
+    # {animation_name: seconds}; missing keys fall back to the frontend defaults.
+    image_animation_durations = models.JSONField(default=dict, blank=True)
+    image_prefetch_count = models.PositiveSmallIntegerField(default=2, validators=[MinValueValidator(0), MaxValueValidator(10)])
     # Encrypted API keys keyed by token provider ('deepseek', 'openai', …), so a
     # saved key survives switching between models of the same provider.
     provider_tokens_encrypted = models.JSONField(default=dict, blank=True)

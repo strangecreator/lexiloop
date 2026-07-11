@@ -428,7 +428,8 @@ class NextCardView(APIView):
                 'round_completed': completed_count,
                 'show_images': _images_enabled(profile, direction),
                 'image_animations': list(profile.image_animations or []),
-                'upcoming_images': _upcoming_images(ordered[1:]),
+                'image_animation_durations': dict(profile.image_animation_durations or {}),
+                'upcoming_images': _upcoming_images(ordered[1:], limit=profile.image_prefetch_count),
             })
 
         cards = due_cards(base_cards, user=request.user, profile=profile, now=now)
@@ -461,7 +462,8 @@ class NextCardView(APIView):
             'queue_breakdown': breakdown,
             'show_images': _images_enabled(profile, direction),
             'image_animations': list(profile.image_animations or []),
-            'upcoming_images': _upcoming_images(ordered[1:]),
+            'image_animation_durations': dict(profile.image_animation_durations or {}),
+            'upcoming_images': _upcoming_images(ordered[1:], limit=profile.image_prefetch_count),
         })
 
 
