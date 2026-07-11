@@ -1066,6 +1066,29 @@ class ImageSettingsAndStudyTests(ApiBase):
         self.assertEqual(good.data['image_model'], 'openai:gpt-5.4-mini')
         self.assertFalse(good.data['show_card_images'])
 
+    def test_direction_toggles_control_study_images(self):
+        self.profile.study_direction = UserProfile.Direction.TERM_TO_DEFINITION
+        self.profile.show_images_term_to_definition = False
+        self.profile.save()
+        self.card()
+        response = self.client.get(f'/api/study/next/?pool={self.pool.id}&mode=due')
+        self.assertFalse(response.data['show_images'])
+        self.profile.show_images_term_to_definition = True
+        self.profile.save()
+        response = self.client.get(f'/api/study/next/?pool={self.pool.id}&mode=due')
+        self.assertTrue(response.data['show_images'])
+        self.assertEqual(response.data['image_animations'], ['droplets', 'mist', 'ripple', 'drift'])
+
+    def test_animation_choices_validate_and_keep_canonical_order(self):
+        bad = self.client.patch('/api/settings/', {'image_animations': ['droplets', 'sparkle']}, format='json')
+        self.assertEqual(bad.status_code, 400)
+        good = self.client.patch('/api/settings/', {'image_animations': ['ripple', 'droplets']}, format='json')
+        self.assertEqual(good.status_code, 200)
+        self.assertEqual(good.data['image_animations'], ['droplets', 'ripple'])
+        empty = self.client.patch('/api/settings/', {'image_animations': []}, format='json')
+        self.assertEqual(empty.status_code, 200)
+        self.assertEqual(empty.data['image_animations'], [])
+
     def test_study_next_reports_upcoming_images_for_prefetch(self):
         from learning.services import images as image_service
         first = self.card('first')

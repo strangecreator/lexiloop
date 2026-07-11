@@ -374,6 +374,15 @@ def _upcoming_images(cards, limit=2):
     return [{'id': c.id, 'image_key': c.image.name} for c in cards if c.image][:limit]
 
 
+def _images_enabled(profile, direction):
+    """The global switch plus the per-direction preference for this task."""
+    if not profile.show_card_images:
+        return False
+    if direction == ReviewLog.Direction.TERM_TO_DEFINITION:
+        return profile.show_images_term_to_definition
+    return profile.show_images_definition_to_term
+
+
 class NextCardView(APIView):
     def get(self, request):
         profile = profile_for(request.user)
@@ -417,7 +426,8 @@ class NextCardView(APIView):
                 'card': payload, 'direction': direction, 'prompt': prompt, 'mode': mode,
                 'queue_count': len(cards), 'round_total': total_count,
                 'round_completed': completed_count,
-                'show_images': profile.show_card_images,
+                'show_images': _images_enabled(profile, direction),
+                'image_animations': list(profile.image_animations or []),
                 'upcoming_images': _upcoming_images(ordered[1:]),
             })
 
@@ -449,7 +459,8 @@ class NextCardView(APIView):
             'card': payload, 'direction': direction, 'prompt': prompt, 'mode': mode,
             'queue_count': len(cards),
             'queue_breakdown': breakdown,
-            'show_images': profile.show_card_images,
+            'show_images': _images_enabled(profile, direction),
+            'image_animations': list(profile.image_animations or []),
             'upcoming_images': _upcoming_images(ordered[1:]),
         })
 

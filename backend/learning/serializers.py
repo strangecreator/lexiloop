@@ -1,7 +1,7 @@
 from django.contrib.auth.models import User
 from rest_framework import serializers
 
-from learning.models import BulkGenerationItem, BulkGenerationJob, CardSchedule, Flashcard, Pool, UserProfile
+from learning.models import IMAGE_ANIMATIONS, BulkGenerationItem, BulkGenerationJob, CardSchedule, Flashcard, Pool, UserProfile
 from learning.services.english import InvalidEnglishTerm, validate_english_term
 from learning.services.security import encrypt_secret
 from learning.services.model_catalog import TOKEN_PROVIDERS, is_supported_model, token_provider_for
@@ -168,6 +168,7 @@ class ProfileSerializer(serializers.ModelSerializer):
         fields = [
             'theme', 'accent_color', 'study_direction', 'generation_model', 'has_generation_token',
             'judge_model', 'has_judge_token', 'image_model', 'has_image_token', 'show_card_images',
+            'show_images_term_to_definition', 'show_images_definition_to_term', 'image_animations',
             'provider_tokens', 'token_status',
             'judge_acceptance_score', 'reveal_threshold',
             'daily_new_limit', 'learning_steps_minutes', 'relearning_steps_minutes',
@@ -216,6 +217,15 @@ class ProfileSerializer(serializers.ModelSerializer):
         if value and not is_supported_model(value):
             raise serializers.ValidationError('Choose one of the public models offered by LexiLoop.')
         return value
+
+    def validate_image_animations(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError('Provide a list of animation names.')
+        unknown = sorted(set(value) - set(IMAGE_ANIMATIONS))
+        if unknown:
+            raise serializers.ValidationError(f"Unknown animation: {', '.join(unknown)}.")
+        # Preserve the canonical order and drop duplicates.
+        return [name for name in IMAGE_ANIMATIONS if name in value]
 
     def validate_learning_steps_minutes(self, value):
         return self._validate_steps(value)

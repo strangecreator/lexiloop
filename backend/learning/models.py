@@ -16,6 +16,14 @@ def default_relearning_steps():
     return [10]
 
 
+# Names must match the CSS reveal animations in the frontend.
+IMAGE_ANIMATIONS = ('droplets', 'mist', 'ripple', 'drift')
+
+
+def default_image_animations():
+    return list(IMAGE_ANIMATIONS)
+
+
 class UserProfile(models.Model):
     class Theme(models.TextChoices):
         DARK = 'dark', 'Dark'
@@ -45,6 +53,9 @@ class UserProfile(models.Model):
     # Empty string means "use the generation model" for image-lookup assistance.
     image_model = models.CharField(max_length=200, blank=True, default='')
     show_card_images = models.BooleanField(default=True)
+    show_images_term_to_definition = models.BooleanField(default=True)
+    show_images_definition_to_term = models.BooleanField(default=True)
+    image_animations = models.JSONField(default=default_image_animations, blank=True)
     # Encrypted API keys keyed by token provider ('deepseek', 'openai', …), so a
     # saved key survives switching between models of the same provider.
     provider_tokens_encrypted = models.JSONField(default=dict, blank=True)
