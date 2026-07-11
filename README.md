@@ -2,7 +2,7 @@
 
 LexiLoop is a Django + React platform for building and retaining English vocabulary. It combines one-field AI card creation, semantic answer judging, durable high-volume generation, server-side pagination, PostgreSQL storage, HTTPS deployment, and an Anki-inspired review scheduler with a polished responsive interface.
 
-Version **1.16.0** introduces flashcard images: upload a file or paste a link (including Yandex/Google image pages — an AI assistant finds the file when a plain download fails), and the study prompt reveals the picture with a cinematic animation, like a memory surfacing.
+Version **1.17.0** refines flashcard images: organic watercolor-style reveal animations (user-selectable), portrait pictures floating beside the text as soft-edged panes, a luminance-adaptive scrim for bright images, per-direction visibility switches, and a fix for stale images after replacement.
 
 ## Highlights
 
@@ -21,6 +21,23 @@ Version **1.16.0** introduces flashcard images: upload a file or paste a link (i
 - Dynamic page titles, cached pronunciation audio, custom favicon, and responsive UI.
 - Dedicated routes: `/overview`, `/study`, `/library`, `/analytics`, `/settings`, `/auth`, `/register`, and `/admin/`.
 - Unknown URLs return a custom LexiLoop 404 page instead of the SPA shell.
+
+## v1.17.0 changes
+
+### Organic reveal animations
+
+The flashcard image now surfaces with one of four soft, curve-only animations — **watercolor droplets** (staggered feathered drops soak through the blurred placeholder and merge until the picture is wet through), **ripple**, **morning mist**, and **slow drift**. Each is built from feathered radial masks with no straight edge anywhere. Settings → Card images has a checkbox per animation; a card keeps one of the checked ones, and unchecking all leaves a plain fade. `prefers-reduced-motion` still gets a fade.
+
+### Smarter presentation
+
+- **Portrait images** are no longer force-cropped: on screens above 560px they float beside the prompt text as a soft-edged pane over the blurred ambience (phones keep full-bleed, where portrait fits naturally).
+- **Bright images** get a deeper text veil: the tiny placeholder's average luminance is measured client-side, so white prompt text stays readable in light mode.
+- Per-direction switches control where images appear (word → definition and definition → word tasks separately — a picture can hint at the answer during recall).
+
+### Fixes
+
+- Replacing a card's image no longer shows the previous picture's blurred placeholder: image requests carry a version parameter, so the browser's immutable HTTP cache can't serve stale bytes.
+- "Study prompt" wording is now "flashcard" everywhere; queue chips use the default cursor; the answer textarea disables native styling and inner scrollbars (Safari squared its right corners); the answer block gets breathing room below an image.
 
 ## v1.16.0 changes
 
