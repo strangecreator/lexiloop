@@ -639,3 +639,12 @@ html:has(.sidebar.open),body:has(.sidebar.open){overflow:hidden}
 @media(min-width:601px) and (max-width:820px){
   .sidebar{width:340px}
 }
+
+/* v1.14 the whole sidebar scrolls instead of the pool list: one natural scroll
+   region on desktop (thin scrollbar) and mobile (no scrollbar) */
+.sidebar{overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--border2) transparent}
+.pool-list{flex:none;overflow-y:visible}
+@media(max-width:820px){
+  .sidebar{scrollbar-width:none}
+  .sidebar::-webkit-scrollbar{display:none}
+}
