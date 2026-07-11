@@ -671,3 +671,7 @@ html:has(.sidebar.open),body:has(.sidebar.open){overflow:hidden}
   html,body,#root,.app-shell,.main,.auth-page{min-height:95.238095vh}
   .modal{max-height:calc(95.238095dvh - 10px)}
 }
+
+/* v1.16 neutral queue chips: composition info shouldn't compete with the task */
+.queue-chips .qc-new,.queue-chips .qc-learning,.queue-chips .qc-review{color:var(--muted);background:var(--surface3)}
+
