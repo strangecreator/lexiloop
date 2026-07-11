@@ -2,7 +2,7 @@
 
 LexiLoop is a Django + React platform for building and retaining English vocabulary. It combines one-field AI card creation, semantic answer judging, durable high-volume generation, server-side pagination, PostgreSQL storage, HTTPS deployment, and an Anki-inspired review scheduler with a polished responsive interface.
 
-Version **1.12.0** refines the study loop and responsive layout: answered reviews are persisted by the judge request itself, the Study progress header explains the remaining queue, the activity heatmap turns vertical on narrow screens, wide monitors get centered content, and the Library page works properly on phones.
+Version **1.13.0** polishes the mobile experience: the Study counter no longer promises a card that was already answered, the vertical activity heatmap fills the width of narrow screens, and the mobile navigation drawer is full-width, scrollable, and locks the page behind it.
 
 ## Highlights
 
@@ -21,6 +21,22 @@ Version **1.12.0** refines the study loop and responsive layout: answered review
 - Dynamic page titles, cached pronunciation audio, custom favicon, and responsive UI.
 - Dedicated routes: `/overview`, `/study`, `/library`, `/analytics`, `/settings`, `/auth`, `/register`, and `/admin/`.
 - Unknown URLs return a custom LexiLoop 404 page instead of the SPA shell.
+
+## v1.13.0 changes
+
+### An honest "done · left" counter
+
+`queue_count` (and the queue chips) are computed with the card currently on screen still in the queue. After an answer was judged and saved, "X done · Y left" still counted that card as left, so finishing the last card read "1 left" and the Next button landed on the caught-up screen. The header and chips now subtract the current card the moment its review is recorded, so the counter always describes what actually remains.
+
+### The vertical heatmap fills narrow screens
+
+The mobile activity grid used fixed 17px cells pinned to the left edge. Cells now scale as squares across the available width (capped at 345px and centered, so tablets keep reasonable proportions).
+
+### A usable mobile navigation drawer
+
+- Phones up to 600px get a full-width drawer (previously only below 500px), and 601–820px screens get a 340px drawer instead of the desktop's 264px.
+- The pool list scrolls inside the drawer — without visible scrollbars on mobile — so navigation, theme, Settings, and the account row stay reachable no matter how many pools exist.
+- While the drawer is open the page behind it no longer scrolls; before, wheel and touch gestures scrolled the page under the scrim, which was confusing.
 
 ## v1.12.0 changes
 

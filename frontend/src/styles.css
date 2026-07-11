@@ -623,3 +623,19 @@ textarea{resize:none!important;overflow-y:hidden;max-height:420px;scrollbar-gutt
 .activity-v-row .activity-cell{width:auto;height:auto;aspect-ratio:1;border-radius:5px}
 .activity-v-foot{max-width:none}
 
+/* v1.13 mobile sidebar: the drawer scrolls its pool list internally and locks
+   the page behind it; phones get a full-width drawer */
+.pool-list{flex:1 1 auto;min-height:0;align-content:start}
+.sidebar{overscroll-behavior:contain}
+.scrim{touch-action:none}
+html:has(.sidebar.open),body:has(.sidebar.open){overflow:hidden}
+@media(max-width:820px){
+  .pool-list{scrollbar-width:none}
+  .pool-list::-webkit-scrollbar{display:none}
+}
+@media(max-width:600px){
+  .sidebar{width:100%;max-width:100%;border-right:0;padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
+}
+@media(min-width:601px) and (max-width:820px){
+  .sidebar{width:340px}
+}
