@@ -1027,7 +1027,7 @@ class SentenceTaskTests(ApiBase):
     def test_sentence_direction_routes_to_the_sentence_judge(self):
         card = self.card()
         judged = {'score': 6, 'verdict': 'correct', 'feedback': 'Good usage.', 'matched_concepts': [],
-                  'missing_or_wrong_concepts': [], 'accepted': True, 'should_reveal': False}
+                  'missing_or_wrong_concepts': [], 'accepted': True}
         with patch('learning.views.judge_sentence', return_value=dict(judged)) as judge:
             response = self.client.post(f'/api/study/{card.id}/judge/', {
                 'answer': 'The auditor was meticulous, checking every receipt twice.',
@@ -1040,18 +1040,37 @@ class SentenceTaskTests(ApiBase):
         log = ReviewLog.objects.get(card=card)
         self.assertEqual(log.direction, ReviewLog.Direction.TERM_TO_SENTENCE)
 
-    def test_mixed_direction_rotates_through_all_three_tasks(self):
+    def test_direction_rotation_follows_the_enabled_task_types(self):
         from learning.views import _direction
-        cards = [self.card(f'word{i}') for i in range(3)]
+        cards = [self.card(f'word{i}') for i in range(6)]
+        # Default: sentence is opt-in, so only the two classic tasks rotate.
+        directions = {_direction(self.profile, card) for card in cards}
+        self.assertEqual(directions, {
+            ReviewLog.Direction.TERM_TO_DEFINITION,
+            ReviewLog.Direction.DEFINITION_TO_TERM,
+        })
+        self.profile.study_directions = ['term_to_definition', 'definition_to_term', 'term_to_sentence']
         directions = {_direction(self.profile, card) for card in cards}
         self.assertEqual(directions, {
             ReviewLog.Direction.TERM_TO_DEFINITION,
             ReviewLog.Direction.DEFINITION_TO_TERM,
             ReviewLog.Direction.TERM_TO_SENTENCE,
         })
+        self.profile.study_directions = ['term_to_sentence']
+        directions = {_direction(self.profile, card) for card in cards}
+        self.assertEqual(directions, {ReviewLog.Direction.TERM_TO_SENTENCE})
+
+    def test_study_directions_setting_validates(self):
+        good = self.client.patch('/api/settings/', {'study_directions': ['term_to_sentence', 'term_to_definition']}, format='json')
+        self.assertEqual(good.status_code, 200)
+        self.assertEqual(good.data['study_directions'], ['term_to_definition', 'term_to_sentence'])
+        empty = self.client.patch('/api/settings/', {'study_directions': []}, format='json')
+        self.assertEqual(empty.status_code, 400)
+        unknown = self.client.patch('/api/settings/', {'study_directions': ['mixed']}, format='json')
+        self.assertEqual(unknown.status_code, 400)
 
     def test_sentence_prompt_is_the_term(self):
-        self.profile.study_direction = UserProfile.Direction.TERM_TO_SENTENCE
+        self.profile.study_directions = ['term_to_sentence']
         self.profile.save()
         card = self.card()
         response = self.client.get(f'/api/study/next/?pool={self.pool.id}&mode=due')
@@ -1101,7 +1120,6 @@ class SentenceTaskTests(ApiBase):
         self.assertEqual(judged['score'], 4)
         self.assertEqual(judged['verdict'], 'half_right')
         self.assertFalse(judged['accepted'])
-        self.assertTrue(judged['should_reveal'])
         self.assertIn('learner_sentence', captured['messages'][1]['content'])
         self.assertIn('usage judge', captured['messages'][0]['content'])
         self.assertTrue(LlmUsage.objects.filter(operation='sentence_judging', success=True).exists())
@@ -1210,7 +1228,7 @@ class ImageSettingsAndStudyTests(ApiBase):
         self.assertFalse(good.data['show_card_images'])
 
     def test_direction_toggles_control_study_images(self):
-        self.profile.study_direction = UserProfile.Direction.TERM_TO_DEFINITION
+        self.profile.study_directions = ['term_to_definition']
         self.profile.show_images_term_to_definition = False
         self.profile.save()
         self.card()

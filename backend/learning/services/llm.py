@@ -370,7 +370,7 @@ _FALLBACK_VERDICTS = {1: 'wrong', 2: 'mostly_wrong', 3: 'partial', 4: 'half_righ
 
 
 def _run_judge(*, user, profile: UserProfile, card: Flashcard, operation: str, model: str,
-               system_prompt: str, payload: dict[str, Any], acceptance_score: int, reveal_threshold: int) -> dict[str, Any]:
+               system_prompt: str, payload: dict[str, Any], acceptance_score: int) -> dict[str, Any]:
     """Shared hedged judge call: request, validate the 1-7 result, log usage."""
     token = _token(profile, operation)
     messages = [
@@ -395,7 +395,6 @@ def _run_judge(*, user, profile: UserProfile, card: Flashcard, operation: str, m
             'matched_concepts': data.get('matched_concepts') if isinstance(data.get('matched_concepts'), list) else [],
             'missing_or_wrong_concepts': data.get('missing_or_wrong_concepts') if isinstance(data.get('missing_or_wrong_concepts'), list) else [],
             'accepted': score >= acceptance_score,
-            'should_reveal': score <= reveal_threshold,
         }
         log_usage(user=user, pool=card.pool, card=card, operation=operation, model=model, result=result)
         return judged
@@ -415,7 +414,6 @@ def judge_definition(*, user, profile: UserProfile, card: Flashcard, answer: str
             'examples': card.examples[:3], 'learner_answer': answer,
         },
         acceptance_score=profile.judge_acceptance_score,
-        reveal_threshold=profile.reveal_threshold,
     )
 
 
@@ -430,7 +428,6 @@ def judge_sentence(*, user, profile: UserProfile, card: Flashcard, answer: str) 
             'example_usages': card.examples[:3], 'learner_sentence': answer,
         },
         acceptance_score=profile.sentence_acceptance_score,
-        reveal_threshold=profile.sentence_reveal_threshold,
     )
 
 

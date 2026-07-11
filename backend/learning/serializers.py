@@ -167,13 +167,13 @@ class ProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserProfile
         fields = [
-            'theme', 'accent_color', 'study_direction', 'generation_model', 'has_generation_token',
+            'theme', 'accent_color', 'study_directions', 'generation_model', 'has_generation_token',
             'judge_model', 'has_judge_token', 'image_model', 'has_image_token', 'show_card_images',
             'show_images_term_to_definition', 'show_images_definition_to_term', 'image_animations',
             'image_animation_durations', 'image_prefetch_count',
             'provider_tokens', 'token_status',
-            'judge_acceptance_score', 'reveal_threshold',
-            'sentence_judge_model', 'has_sentence_token', 'sentence_acceptance_score', 'sentence_reveal_threshold',
+            'judge_acceptance_score',
+            'sentence_judge_model', 'has_sentence_token', 'sentence_acceptance_score',
             'daily_new_limit', 'learning_steps_minutes', 'relearning_steps_minutes',
             'graduating_interval_days', 'easy_interval_days', 'easy_bonus', 'hard_multiplier',
             'lapse_multiplier', 'minimum_ease',
@@ -224,6 +224,18 @@ class ProfileSerializer(serializers.ModelSerializer):
         if value and not is_supported_model(value):
             raise serializers.ValidationError('Choose one of the public models offered by LexiLoop.')
         return value
+
+    def validate_study_directions(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError('Provide a list of task types.')
+        allowed = ('definition_to_term', 'term_to_definition', 'term_to_sentence')
+        unknown = sorted(set(value) - set(allowed))
+        if unknown:
+            raise serializers.ValidationError(f"Unknown task type: {', '.join(unknown)}.")
+        ordered = [direction for direction in allowed if direction in value]
+        if not ordered:
+            raise serializers.ValidationError('Enable at least one task type.')
+        return ordered
 
     def validate_sentence_judge_model(self, value):
         # Empty string means "use the definition judge model".

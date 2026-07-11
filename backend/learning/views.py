@@ -363,15 +363,18 @@ class BulkJobCancelView(APIView):
         return Response(BulkGenerationJobSerializer(job).data)
 
 
+CANONICAL_DIRECTIONS = (
+    ReviewLog.Direction.DEFINITION_TO_TERM,
+    ReviewLog.Direction.TERM_TO_DEFINITION,
+    ReviewLog.Direction.TERM_TO_SENTENCE,
+)
+
+
 def _direction(profile, card):
-    if profile.study_direction != UserProfile.Direction.MIXED:
-        return profile.study_direction
-    options = (
-        ReviewLog.Direction.DEFINITION_TO_TERM,
-        ReviewLog.Direction.TERM_TO_DEFINITION,
-        ReviewLog.Direction.TERM_TO_SENTENCE,
-    )
-    return options[(card.id + card.schedule.repetitions) % len(options)]
+    enabled = [d for d in CANONICAL_DIRECTIONS if d in (profile.study_directions or [])]
+    if not enabled:
+        enabled = [ReviewLog.Direction.TERM_TO_DEFINITION]
+    return enabled[(card.id + card.schedule.repetitions) % len(enabled)]
 
 
 def _upcoming_images(cards, limit=2):
@@ -597,7 +600,7 @@ class JudgeView(APIView):
                 'feedback': 'Correct.' if accepted else f'The expected answer is “{card.term}”.',
                 'matched_concepts': [card.term] if accepted else [],
                 'missing_or_wrong_concepts': [] if accepted else [card.term],
-                'accepted': accepted, 'should_reveal': not accepted,
+                'accepted': accepted,
             }
         elif direction == ReviewLog.Direction.TERM_TO_SENTENCE:
             judged = judge_sentence(user=request.user, profile=profile_for(request.user), card=card, answer=answer)

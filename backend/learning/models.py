@@ -16,6 +16,11 @@ def default_relearning_steps():
     return [10]
 
 
+def default_study_directions():
+    # The sentence task is opt-in by default.
+    return ['term_to_definition', 'definition_to_term']
+
+
 # Names must match the CSS reveal animations in the frontend.
 IMAGE_ANIMATIONS = ('mist', 'ripple', 'drift', 'droplets')
 
@@ -49,7 +54,8 @@ class UserProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
     theme = models.CharField(max_length=16, choices=Theme.choices, default=Theme.SYSTEM)
     accent_color = models.CharField(max_length=16, choices=AccentColor.choices, default=AccentColor.EMERALD)
-    study_direction = models.CharField(max_length=32, choices=Direction.choices, default=Direction.MIXED)
+    # Enabled task types; due cards rotate deterministically through them.
+    study_directions = models.JSONField(default=default_study_directions)
     generation_model = models.CharField(max_length=200, default='external:deepseek-chat')
     judge_model = models.CharField(max_length=200, default='external:deepseek-chat')
     # Empty string means "use the generation model" for image-lookup assistance.
@@ -66,11 +72,9 @@ class UserProfile(models.Model):
     # saved key survives switching between models of the same provider.
     provider_tokens_encrypted = models.JSONField(default=dict, blank=True)
     judge_acceptance_score = models.PositiveSmallIntegerField(default=5, validators=[MinValueValidator(1), MaxValueValidator(7)])
-    reveal_threshold = models.PositiveSmallIntegerField(default=5, validators=[MinValueValidator(1), MaxValueValidator(7)])
     # Empty string means "use the definition judge model" for sentence grading.
     sentence_judge_model = models.CharField(max_length=200, blank=True, default='')
     sentence_acceptance_score = models.PositiveSmallIntegerField(default=5, validators=[MinValueValidator(1), MaxValueValidator(7)])
-    sentence_reveal_threshold = models.PositiveSmallIntegerField(default=5, validators=[MinValueValidator(1), MaxValueValidator(7)])
     daily_new_limit = models.PositiveIntegerField(default=20, validators=[MinValueValidator(0), MaxValueValidator(500)])
     learning_steps_minutes = models.JSONField(default=default_learning_steps)
     relearning_steps_minutes = models.JSONField(default=default_relearning_steps)
