@@ -2,7 +2,7 @@
 
 LexiLoop is a Django + React platform for building and retaining English vocabulary. It combines one-field AI card creation, semantic answer judging, durable high-volume generation, server-side pagination, PostgreSQL storage, HTTPS deployment, and an Anki-inspired review scheduler with a polished responsive interface.
 
-Version **1.19.0** makes every numeric field comfortable to edit (free typing while focused, validation on blur), un-clips the pool actions menu on narrow screens, and turns the watercolor droplets animation into a slower opt-in.
+Version **1.20.0** introduces the third study task — **Word → sentence**, graded by a dedicated LLM usage judge — recalibrates the definition-judge rubric so the full 1–7 scale is actually used, and unifies reveal-animation defaults at 2.5 seconds.
 
 ## Highlights
 
@@ -21,6 +21,20 @@ Version **1.19.0** makes every numeric field comfortable to edit (free typing wh
 - Dynamic page titles, cached pronunciation audio, custom favicon, and responsive UI.
 - Dedicated routes: `/overview`, `/study`, `/library`, `/analytics`, `/settings`, `/auth`, `/register`, and `/admin/`.
 - Unknown URLs return a custom LexiLoop 404 page instead of the SPA shell.
+
+## v1.20.0 changes
+
+### Word → sentence task
+
+The learner sees a word and writes one original sentence using it. A dedicated LLM judge grades usage on a fixed 1–7 rubric — meaning first, then whether the context actually demonstrates the meaning, then the word's grammar and collocations — and includes a corrected version of flawed sentences in its feedback. Settings gains a **Sentence judge** section (model — defaults to the definition judge — accept score, auto-reveal threshold), a third **Automatic review timing** band (Easy < 20s, Good < 60s by default), a per-task image switch, and the "Word → sentence" option in Card direction. Mixed direction rotates deterministically through all three tasks. Sentence-judge calls appear in AI usage as "Sentence judging".
+
+### A definition-judge rubric that uses the whole scale
+
+The old anchors made 4 ("genuinely ambiguous or too vague to decide") describe judge-uncertainty rather than answer quality, and 7 ("exact and complete") read as verbatim-only — so judges practically never awarded either. The new scale is a quality continuum: 4 = half right (core idea recognizable, an important aspect missing or off), 7 = fully correct and precise **regardless of wording**, plus explicit calibration rules ("if deciding between 3 and 5, it's a 4"; "award 7 for complete meaning even when short or informal"). Verified with live DeepSeek probes: casual-but-exact answers now earn 7 and half-answers earn 4 on both judges. Verdicts gain `half_right` and `perfect`.
+
+### Animation defaults
+
+Morning mist, Ripple, and Slow drift all default to 2.5 seconds (watercolor droplets keeps its slow 8s).
 
 ## v1.19.0 changes
 
