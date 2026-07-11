@@ -648,3 +648,6 @@ html:has(.sidebar.open),body:has(.sidebar.open){overflow:hidden}
   .sidebar{scrollbar-width:none}
   .sidebar::-webkit-scrollbar{display:none}
 }
+
+/* v1.14 AI usage: show provider errors in full instead of clipping at 30px */
+.failure-list p{max-height:none;overflow:visible;overflow-wrap:anywhere;line-height:1.5}
