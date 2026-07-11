@@ -2,7 +2,7 @@
 
 LexiLoop is a Django + React platform for building and retaining English vocabulary. It combines one-field AI card creation, semantic answer judging, durable high-volume generation, server-side pagination, PostgreSQL storage, HTTPS deployment, and an Anki-inspired review scheduler with a polished responsive interface.
 
-Version **1.15.0** softens the interface scale on small phones: screens up to 450px wide render at 105% zoom instead of the desktop's 120%, so type and controls sit comfortably and the narrow viewport regains usable space.
+Version **1.16.0** introduces flashcard images: upload a file or paste a link (including Yandex/Google image pages — an AI assistant finds the file when a plain download fails), and the study prompt reveals the picture with a cinematic animation, like a memory surfacing.
 
 ## Highlights
 
@@ -21,6 +21,26 @@ Version **1.15.0** softens the interface scale on small phones: screens up to 45
 - Dynamic page titles, cached pronunciation audio, custom favicon, and responsive UI.
 - Dedicated routes: `/overview`, `/study`, `/library`, `/analytics`, `/settings`, `/auth`, `/register`, and `/admin/`.
 - Unknown URLs return a custom LexiLoop 404 page instead of the SPA shell.
+
+## v1.16.0 changes
+
+### Flashcard images
+
+A card can carry an optional picture, managed from the expanded library card or straight from the study page (the image button in the card's top line). Three ways in:
+
+- **Upload** any image file (up to 12 MB; re-encoded to JPEG, metadata stripped).
+- **Paste a link.** Direct image URLs download as is; Yandex/Google/Bing image-search result links are unwrapped to the real file automatically.
+- **AI-assisted lookup.** When the pasted link is a web page rather than a picture, the backend reads the page's meta and `<img>` candidates and asks the *image assistant* model to point at the right file. The model is chosen in Settings → Card images (defaults to the generation model, sharing its provider key); its calls appear in AI usage as "Image lookup".
+
+Server-side downloads are SSRF-guarded (no private addresses), size-capped, and validated as real images.
+
+### A cinematic study reveal
+
+The study prompt becomes the card's picture: first a tiny blurred thumbnail surfaces, then the full image reveals with one of four cinematic animations — emerge, ken-burns, iris, or tide — chosen deterministically per card, under a gradient scrim that keeps the prompt text readable. Upcoming queue cards' images are prefetched (`upcoming_images` in `/api/study/next/`), so the reveal is instant, and `prefers-reduced-motion` falls back to a plain fade. A Settings toggle hides images during study without deleting them.
+
+### Neutral queue chips
+
+The new/learning/review chips in the Study header now use the same muted grey as the round label instead of competing colors.
 
 ## v1.15.0 changes
 
