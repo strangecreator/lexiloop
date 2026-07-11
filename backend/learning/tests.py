@@ -1124,14 +1124,14 @@ class ImageSettingsAndStudyTests(ApiBase):
         self.profile.save()
         response = self.client.get(f'/api/study/next/?pool={self.pool.id}&mode=due')
         self.assertTrue(response.data['show_images'])
-        self.assertEqual(response.data['image_animations'], ['droplets', 'mist', 'ripple', 'drift'])
+        self.assertEqual(response.data['image_animations'], ['mist', 'ripple', 'drift'])
 
     def test_animation_choices_validate_and_keep_canonical_order(self):
         bad = self.client.patch('/api/settings/', {'image_animations': ['droplets', 'sparkle']}, format='json')
         self.assertEqual(bad.status_code, 400)
         good = self.client.patch('/api/settings/', {'image_animations': ['ripple', 'droplets']}, format='json')
         self.assertEqual(good.status_code, 200)
-        self.assertEqual(good.data['image_animations'], ['droplets', 'ripple'])
+        self.assertEqual(good.data['image_animations'], ['ripple', 'droplets'])
         empty = self.client.patch('/api/settings/', {'image_animations': []}, format='json')
         self.assertEqual(empty.status_code, 200)
         self.assertEqual(empty.data['image_animations'], [])

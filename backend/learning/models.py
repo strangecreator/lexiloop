@@ -17,11 +17,12 @@ def default_relearning_steps():
 
 
 # Names must match the CSS reveal animations in the frontend.
-IMAGE_ANIMATIONS = ('droplets', 'mist', 'ripple', 'drift')
+IMAGE_ANIMATIONS = ('mist', 'ripple', 'drift', 'droplets')
 
 
 def default_image_animations():
-    return list(IMAGE_ANIMATIONS)
+    # Droplets is the showpiece but also the longest; it stays opt-in.
+    return ['mist', 'ripple', 'drift']
 
 
 class UserProfile(models.Model):
