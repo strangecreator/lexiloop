@@ -826,3 +826,39 @@ html:has(.sidebar.open),body:has(.sidebar.open){overflow:hidden}
   }
   .image-portrait .prompt-content{padding-right:36%}
 }
+
+/* v1.18 light mode: the recall hints become a frosted panel over the image so
+   its chips and examples never inherit the white prompt text */
+.study-prompt.has-image .recall-hints{color:var(--text);text-shadow:none;background:color-mix(in srgb,var(--surface) 90%,transparent);backdrop-filter:blur(9px);border-color:color-mix(in srgb,var(--border) 70%,transparent)}
+.study-prompt.has-image .recall-hints .recall-examples p{color:var(--text2)}
+.study-prompt.has-image .recall-collocations>span{color:var(--text)}
+.study-prompt.has-image .recall-hints .letter-hint{color:var(--text)}
+
+/* v1.18 configurable animation durations + a gentler watercolor: drops now
+   swell steadily out of a soft haze instead of popping in */
+.image-loaded .anim-droplets .prompt-visual-frame{animation:prompt-droplets-2 var(--dur-droplets,5.2s) cubic-bezier(.45,.08,.35,.95) forwards}
+@keyframes prompt-droplets-2{
+  0%{opacity:0;filter:blur(15px);-webkit-mask-size:0% 0%,0% 0%,0% 0%,0% 0%,0% 0%,0% 0%;mask-size:0% 0%,0% 0%,0% 0%,0% 0%,0% 0%,0% 0%}
+  6%{opacity:1}
+  16%{-webkit-mask-size:24% 24%,9% 9%,2% 2%,0% 0%,0% 0%,0% 0%;mask-size:24% 24%,9% 9%,2% 2%,0% 0%,0% 0%,0% 0%}
+  30%{-webkit-mask-size:52% 52%,31% 31%,16% 16%,6% 6%,1% 1%,0% 0%;mask-size:52% 52%,31% 31%,16% 16%,6% 6%,1% 1%,0% 0%}
+  46%{filter:blur(7px);-webkit-mask-size:86% 86%,60% 60%,41% 41%,24% 24%,12% 12%,4% 4%;mask-size:86% 86%,60% 60%,41% 41%,24% 24%,12% 12%,4% 4%}
+  62%{-webkit-mask-size:128% 128%,98% 98%,74% 74%,52% 52%,34% 34%,18% 18%;mask-size:128% 128%,98% 98%,74% 74%,52% 52%,34% 34%,18% 18%}
+  78%{filter:blur(2px);-webkit-mask-size:196% 196%,158% 158%,128% 128%,98% 98%,72% 72%,50% 50%;mask-size:196% 196%,158% 158%,128% 128%,98% 98%,72% 72%,50% 50%}
+  100%{opacity:1;filter:blur(0);-webkit-mask-size:560% 560%,530% 530%,510% 510%,490% 490%,470% 470%,450% 450%;mask-size:560% 560%,530% 530%,510% 510%,490% 490%,470% 470%,450% 450%}
+}
+.image-loaded .anim-ripple .prompt-visual-frame{animation-duration:var(--dur-ripple,2.8s)}
+.image-loaded .anim-mist .prompt-visual-frame{animation-duration:var(--dur-mist,2.3s)}
+.image-loaded .anim-drift .prompt-visual-frame{animation-duration:var(--dur-drift,6.4s)}
+
+/* v1.18 settings: per-animation duration inputs */
+.check-row.anim-row{align-items:center;justify-content:space-between;gap:12px;cursor:default}
+.check-row-main{display:flex;align-items:flex-start;gap:10px;cursor:pointer;flex:1;min-width:0}
+.anim-duration{display:flex;align-items:center;gap:5px;flex:none}
+.anim-duration input{width:66px;height:31px;padding:4px 8px;font-size:12px;min-height:0}
+.anim-duration>span{color:var(--muted2);font-size:11px}
+
+/* v1.18 the generic `.settings-grid label{flex-direction:column}` rule was
+   stacking checkboxes above their labels; check rows lay out horizontally */
+.settings-grid label.check-row,.settings-grid .anim-row label.check-row-main{flex-direction:row;align-items:flex-start;gap:10px}
+.settings-grid .anim-row label.anim-duration{flex-direction:row;align-items:center;gap:5px}
