@@ -660,3 +660,14 @@ html:has(.sidebar.open),body:has(.sidebar.open){overflow:hidden}
 /* v1.14 bulk review: chips keep their natural height when one line fits the
    min-height'd list (stretched flex lines made lone chips 70px tall) */
 .normalized-list{align-content:flex-start}
+
+/* v1.15 calmer scale on small phones: the survey-driven 120% zoom is desktop
+   comfort — on <=450px screens it inflated type and controls and wasted ~17%
+   of an already narrow viewport. 105% keeps a slight boost while restoring
+   room. The vh/dvh values are the zoom compensation (100/1.05) that mirrors
+   the global 83.333333vh (100/1.2) rules. */
+@media(max-width:450px){
+  body{zoom:1.05}
+  html,body,#root,.app-shell,.main,.auth-page{min-height:95.238095vh}
+  .modal{max-height:calc(95.238095dvh - 10px)}
+}

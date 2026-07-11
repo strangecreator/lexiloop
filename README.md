@@ -2,7 +2,7 @@
 
 LexiLoop is a Django + React platform for building and retaining English vocabulary. It combines one-field AI card creation, semantic answer judging, durable high-volume generation, server-side pagination, PostgreSQL storage, HTTPS deployment, and an Anki-inspired review scheduler with a polished responsive interface.
 
-Version **1.14.0** continues the interface polish: the activity heatmap uses absolute brightness thresholds, the sidebar scrolls as one panel, AI failure messages display in full, the library search stays full-width on small phones, and the bulk-generation popup supports Cmd/Ctrl+Enter.
+Version **1.15.0** softens the interface scale on small phones: screens up to 450px wide render at 105% zoom instead of the desktop's 120%, so type and controls sit comfortably and the narrow viewport regains usable space.
 
 ## Highlights
 
@@ -21,6 +21,12 @@ Version **1.14.0** continues the interface polish: the activity heatmap uses abs
 - Dynamic page titles, cached pronunciation audio, custom favicon, and responsive UI.
 - Dedicated routes: `/overview`, `/study`, `/library`, `/analytics`, `/settings`, `/auth`, `/register`, and `/admin/`.
 - Unknown URLs return a custom LexiLoop 404 page instead of the SPA shell.
+
+## v1.15.0 changes
+
+### A calmer scale on small phones
+
+The survey-driven 120% interface zoom is desktop comfort; on ≤450px screens it inflated text and controls and consumed ~17% of an already narrow viewport. Those screens now render at 105%: body text lands at an effective 13–15px (within mobile typography guidelines), captions stay above 10px, and layouts gain roughly 12% more horizontal room. The zoom-compensated viewport-height rules (`min-height` chain, modal `max-height`) get matching 100/1.05 overrides in the same breakpoint, and screens 451px and wider are unchanged.
 
 ## v1.14.0 changes
 
