@@ -862,3 +862,6 @@ html:has(.sidebar.open),body:has(.sidebar.open){overflow:hidden}
    stacking checkboxes above their labels; check rows lay out horizontally */
 .settings-grid label.check-row,.settings-grid .anim-row label.check-row-main{flex-direction:row;align-items:flex-start;gap:10px}
 .settings-grid .anim-row label.anim-duration{flex-direction:row;align-items:center;gap:5px}
+
+/* v1.19 droplets is opt-in and slower by default */
+.image-loaded .anim-droplets .prompt-visual-frame{animation-duration:var(--dur-droplets,8s)}
