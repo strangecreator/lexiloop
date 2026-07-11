@@ -332,6 +332,91 @@ def openai_post_provider(model_name: str) -> PostFunc:
     return openai_post
 
 
+def anthropic_post_provider(model_name: str) -> PostFunc:
+    """Direct Anthropic Messages API (https://api.anthropic.com/v1/messages)."""
+    from decimal import Decimal
+
+    # $ per token: (input, output). Cache reads bill at 0.1x input,
+    # cache writes (5m TTL) at 1.25x input.
+    ANTHROPIC_PRICES = {
+        "claude-haiku-4-5": (Decimal("0.000001"), Decimal("0.000005")),
+        "claude-sonnet-5": (Decimal("0.000003"), Decimal("0.000015")),
+        "claude-opus-4-8": (Decimal("0.000005"), Decimal("0.000025")),
+    }
+
+    async def anthropic_post(
+        session: aiohttp.ClientSession,
+        payload: dict[str, tp.Any],
+        timeout: int = 300,
+        pool: str | None = None,  # ignored
+        token: str | None = None,
+        **kwargs,
+    ) -> dict[str, tp.Any]:
+        if token is None:
+            auth._ensure_env_loaded()
+            token = os.getenv("ANTHROPIC_API_KEY")
+        if not token:
+            raise ValueError("An Anthropic API key is required for this model.")
+
+        url = "https://api.anthropic.com/v1/messages"
+        headers = {
+            "x-api-key": token,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        payload_extended = tools.extend_dict({
+            "model": model_name,
+            "stream": False,
+            "max_tokens": 4096,  # required by the Messages API
+        }, payload, inplace=False, override=False)
+
+        # Opus 4.7+ and Sonnet 5 reject sampling parameters outright (400);
+        # Haiku 4.5 still accepts them. Keep user prompts identical, but do
+        # not fail because of an optional temperature field added by LexiLoop.
+        if not str(model_name).startswith("claude-haiku"):
+            for key in ("temperature", "top_p", "top_k"):
+                payload_extended.pop(key, None)
+
+        # Reuse the Anthropic payload converter (system messages move to the
+        # top-level `system` field) and the content-block response parser.
+        payload_extended = internal_claude_sonnet_4_5.to_antropic_payload(payload_extended)
+
+        start_time = time.perf_counter()
+        raw = await utils.post_strict_safe_fixed_utf_8(
+            session, url, headers, payload_extended, timeout=timeout, **kwargs
+        )
+        elapsed_time = time.perf_counter() - start_time
+
+        usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
+        input_price, output_price = ANTHROPIC_PRICES.get(model_name, (Decimal("0"), Decimal("0")))
+        input_tokens = int(usage.get("input_tokens") or 0)
+        output_tokens = int(usage.get("output_tokens") or 0)
+        cache_read_tokens = int(usage.get("cache_read_input_tokens") or 0)
+        cache_write_tokens = int(usage.get("cache_creation_input_tokens") or 0)
+        total_price = (
+            input_tokens * input_price
+            + output_tokens * output_price
+            + cache_read_tokens * input_price / 10
+            + cache_write_tokens * input_price * Decimal("1.25")
+        )
+        stats = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_read_tokens": cache_read_tokens,
+            "cache_write_tokens": cache_write_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "total_price": float(total_price),
+        }
+
+        parsed = internal_claude_sonnet_4_5.parse_response({"response": raw})
+        return tools.extend_dict({
+            "stats": stats,
+            "elapsed_time": elapsed_time,
+        }, parsed, inplace=True, deepcopy=False)
+
+    return anthropic_post
+
+
 async def eliza_deepseek_reasoner_post(
     session: aiohttp.ClientSession,
     payload: dict[str, tp.Any],
@@ -1004,6 +1089,10 @@ MODEL_REGISTRY.register_regex(
 MODEL_REGISTRY.register_regex(
     r"openai:(?P<name>[A-Za-z0-9._:/-]+)",
     lambda match: (lambda: openai_post_provider(match["name"])),
+)
+MODEL_REGISTRY.register_regex(
+    r"anthropic:(?P<name>[A-Za-z0-9._:/-]+)",
+    lambda match: (lambda: anthropic_post_provider(match["name"])),
 )
 
 
