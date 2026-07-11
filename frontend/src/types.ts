@@ -9,6 +9,7 @@ export type Direction = 'mixed' | 'term_to_definition' | 'definition_to_term'
 export interface Settings {
   theme: Theme; accent_color: AccentColor; study_direction: Direction; generation_model: string; has_generation_token: boolean;
   judge_model: string; has_judge_token: boolean; token_status: Record<string, boolean>;
+  image_model: string; has_image_token: boolean; show_card_images: boolean;
   judge_acceptance_score: number; reveal_threshold: number;
   daily_new_limit: number; learning_steps_minutes: number[]; relearning_steps_minutes: number[];
   graduating_interval_days: number; easy_interval_days: number; easy_bonus: number;
@@ -23,6 +24,7 @@ export interface Card {
   id:number; pool:number; pool_name:string; term:string; normalized_term:string; part_of_speech:string; ipa:string;
   short_definition:string; definition:string; examples:Example[]; forms:Record<string,string>; synonyms:string[];
   antonyms:string[]; collocations:string[]; usage_notes:string; aliases:string[]; suspended:boolean;
+  has_image:boolean; image_key:string;
   schedule:Schedule; created_at:string; updated_at:string;
 }
 export interface JudgeResult {grading:'binary'|'ordinal'; score:number; verdict:string; feedback:string; matched_concepts:string[]; missing_or_wrong_concepts:string[]; accepted:boolean; should_reveal:boolean; review_recorded?:boolean}

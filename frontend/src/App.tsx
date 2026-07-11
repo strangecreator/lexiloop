@@ -4,7 +4,8 @@ import {
   Clock3, Edit3, Flame, FolderPlus, Gauge, Library, LogOut, Moon, Plus, Search,
   Settings as SettingsIcon, Sparkles, Sun, Trash2, Volume2, X, Zap, Layers3, RotateCcw,
   ShieldCheck, KeyRound, WandSparkles, CircleHelp, ArrowRight, ListPlus, Save,
-  PanelLeftClose, PanelLeftOpen, Palette, Ban, Unlock, Copy, GitMerge, MoreVertical, AlertTriangle, RefreshCw
+  PanelLeftClose, PanelLeftOpen, Palette, Ban, Unlock, Copy, GitMerge, MoreVertical, AlertTriangle, RefreshCw,
+  Image as ImageIcon, ImagePlus, Upload
 } from 'lucide-react'
 import { api, apiBlob, apiPage, ApiError, list, setToken, token } from './api'
 import type { AccentColor, Analytics, BulkJob, Card, Direction, JudgeResult, ModelOption, Overview, Pool, Settings, Theme } from './types'
@@ -34,6 +35,7 @@ const ACCENTS:AccentColor[]=['emerald','blue','teal','indigo','violet','rose','o
 const emptySettings:Settings = {
   theme:'system', accent_color:'emerald', study_direction:'mixed', generation_model:'external:deepseek-chat', has_generation_token:false,
   judge_model:'external:deepseek-chat', has_judge_token:false, token_status:{}, judge_acceptance_score:5, reveal_threshold:5,
+  image_model:'', has_image_token:false, show_card_images:true,
   daily_new_limit:20, learning_steps_minutes:[1,10], relearning_steps_minutes:[10], graduating_interval_days:1,
   easy_interval_days:4, easy_bonus:1.3, hard_multiplier:1.2, lapse_multiplier:.5, minimum_ease:1.3,
   term_to_definition_easy_seconds:12, term_to_definition_good_seconds:35,
@@ -373,7 +375,7 @@ async function reviewCurrentCard(cardId:number,payload:Record<string,unknown>){
 function Study({activePool,notify}:{activePool:number|null;notify:(m:string,k?:Toast['kind'])=>void}){
   type StudyMode = 'due'|'practice'
   type QueueBreakdown = {new:number;learning:number;review:number}
-  type StudySession = {card:Card|null;direction:Direction;prompt?:string;message?:string;mode?:StudyMode;practice_complete?:boolean;queue_count?:number;round_total?:number;round_completed?:number;queue_breakdown?:QueueBreakdown}
+  type StudySession = {card:Card|null;direction:Direction;prompt?:string;message?:string;mode?:StudyMode;practice_complete?:boolean;queue_count?:number;round_total?:number;round_completed?:number;queue_breakdown?:QueueBreakdown;show_images?:boolean;upcoming_images?:{id:number;image_key:string}[]}
   const [session,setSession]=useState<StudySession|null>(null)
   const [mode,setMode]=useState<StudyMode>('due')
   const [practiceSeen,setPracticeSeen]=useState<number[]>([])
@@ -387,6 +389,8 @@ function Study({activePool,notify}:{activePool:number|null;notify:(m:string,k?:T
   const [responseMs,setResponseMs]=useState<number|null>(null)
   const [hintLetters,setHintLetters]=useState(0)
   const [reviewed,setReviewed]=useState(false)
+  const [promptImage,setPromptImage]=useState<{thumb?:string;full?:string;loaded:boolean}|null>(null)
+  const [imageEditor,setImageEditor]=useState(false)
   const reviewedRef=useRef(false)
   const cardRef=useRef<HTMLElement>(null)
   const load=useCallback(async(requestedMode:StudyMode='due',excluded:number[]=[],completed=0,resetRound=false,forcedTotal?:number)=>{
@@ -416,6 +420,29 @@ function Study({activePool,notify}:{activePool:number|null;notify:(m:string,k?:T
       requestAnimationFrame(()=>cardRef.current?.scrollIntoView({block:'start',behavior:'auto'}))
     }
   },[card?.id])
+  const showImages=session?.show_images!==false
+  useEffect(()=>{
+    let alive=true
+    setPromptImage(null)
+    if(!card?.has_image||!showImages)return
+    // The tiny blurred thumb paints first; the full image starts its reveal
+    // animation only after it is decoded, so the animation never stutters.
+    void cardImageObjectUrl(card.id,card.image_key,'thumb').then(url=>{if(alive)setPromptImage(previous=>({loaded:false,...(previous||{}),thumb:url}))}).catch(()=>{})
+    void cardImageObjectUrl(card.id,card.image_key,'full').then(url=>{
+      const probe=document.createElement('img')
+      probe.src=url
+      const ready=()=>{if(alive)setPromptImage(previous=>({...(previous||{}),full:url,loaded:true}))}
+      if(probe.decode)probe.decode().then(ready,ready);else probe.onload=ready
+    }).catch(()=>{})
+    return()=>{alive=false}
+  },[card?.id,card?.image_key,showImages])
+  useEffect(()=>{
+    // Warm the blob cache for the next cards so their reveal is instant.
+    for(const upcoming of session?.upcoming_images||[]){
+      void cardImageObjectUrl(upcoming.id,upcoming.image_key,'thumb').catch(()=>{})
+      void cardImageObjectUrl(upcoming.id,upcoming.image_key,'full').catch(()=>{})
+    }
+  },[session?.upcoming_images])
   const elapsed=()=>Math.max(0,Date.now()-started)
   const markReviewed=useCallback((cardId:number)=>{
     reviewedRef.current=true
@@ -490,7 +517,7 @@ function Study({activePool,notify}:{activePool:number|null;notify:(m:string,k?:T
   const startPractice=()=>{setPracticeSeen([]);void load('practice',[],0,true)}
   const returnToDue=()=>{setPracticeSeen([]);void load('due',[],0,true)}
   useEffect(()=>{const fn=(e:KeyboardEvent)=>{
-    if(!card||busy||e.repeat||document.visibilityState!=='visible'||!document.hasFocus())return
+    if(!card||busy||e.repeat||imageEditor||document.visibilityState!=='visible'||!document.hasFocus())return
     const target=e.target as HTMLElement|null
     const typing=Boolean(target?.closest('input, textarea, select, [contenteditable="true"]'))
     const enter=e.key==='Enter'||e.code==='NumpadEnter'
@@ -506,7 +533,7 @@ function Study({activePool,notify}:{activePool:number|null;notify:(m:string,k?:T
     if(revealShortcut){e.preventDefault();e.stopPropagation();reveal();return}
     if((e.ctrlKey||e.metaKey)&&enter){e.preventDefault();void submit();return}
     if(typing)return
-  };window.addEventListener('keydown',fn,{capture:true});return()=>window.removeEventListener('keydown',fn,{capture:true})},[card,judge,revealed,answer,busy,mode,practiceSeen,responseMs,started,roundCompleted,reviewed])
+  };window.addEventListener('keydown',fn,{capture:true});return()=>window.removeEventListener('keydown',fn,{capture:true})},[card,judge,revealed,answer,busy,mode,practiceSeen,responseMs,started,roundCompleted,reviewed,imageEditor])
   if(busy&&!session)return <Loader text="Choosing the right card…"/>
   if(!card){
     const practiceComplete=mode==='practice'&&session?.practice_complete
@@ -526,11 +553,14 @@ function Study({activePool,notify}:{activePool:number|null;notify:(m:string,k?:T
   return <div className="study-layout">
     <div className="study-progress"><div className="study-progress-copy"><span>{mode==='practice'?'Practice round':'Due review round'}</span><small>{roundCompleted} done · {remaining} left{mode==='practice'?' in this pool':''}</small></div><div className="study-progress-track"><div role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={roundCompleted}><i style={{width:`${progress}%`}}/></div>{mode==='due'&&breakdown&&remaining>0&&<div className="queue-chips" aria-label="Remaining queue composition">{breakdown.new>0&&<span className="qc-new" title={`${breakdown.new} brand-new card${breakdown.new===1?'':'s'} within today's limit`}>{breakdown.new} new</span>}{breakdown.learning>0&&<span className="qc-learning" title={`${breakdown.learning} card${breakdown.learning===1?' is':'s are'} in short learning steps — failed or recently added cards return here`}>{breakdown.learning} learning</span>}{breakdown.review>0&&<span className="qc-review" title={`${breakdown.review} graduated card${breakdown.review===1?'':'s'} scheduled for review today`}>{breakdown.review} review</span>}</div>}</div><button className="practice-switch" title={mode==='practice'?'Return to cards scheduled as due by spaced repetition':'Study every card once now without changing its due date'} onClick={()=>mode==='practice'?returnToDue():startPractice()}>{mode==='practice'?'Due reviews':'Practice all'}</button></div>
     <article ref={cardRef} className={`study-card ${judge?.accepted?'correct':judge&&!judge.accepted?'wrong':''}`}>
-      <div className="card-topline"><span>{defMode?'Explain this word':'Recall the word'}</span><span className="state-pill">{mode==='practice'?'practice':card.schedule.state}</span></div>
-      <div className="study-prompt">
+      <div className="card-topline"><span>{defMode?'Explain this word':'Recall the word'}</span><div className="topline-tools"><button className="topline-image-button" title={card.has_image?'Change this card’s image':'Add an image to this card'} onClick={()=>setImageEditor(true)}>{card.has_image?<ImageIcon size={15}/>:<ImagePlus size={15}/>}</button><span className="state-pill">{mode==='practice'?'practice':card.schedule.state}</span></div></div>
+      <div className={`study-prompt ${promptImage?'has-image':''} ${promptImage?.loaded?'image-loaded':''}`}>
+        {promptImage&&<div className={`prompt-visual anim-${PROMPT_ANIMATIONS[card.id%PROMPT_ANIMATIONS.length]}`} aria-hidden="true">{promptImage.thumb&&<i className="prompt-visual-thumb" style={{backgroundImage:`url(${promptImage.thumb})`}}/>}{promptImage.full&&<i className="prompt-visual-full" style={{backgroundImage:`url(${promptImage.full})`}}/>}<i className="prompt-visual-scrim"/></div>}
+        <div className="prompt-content">
         <h2>{session.prompt}</h2>{defMode&&card.ipa&&<div className="pronunciation">/{card.ipa}/ <button onClick={()=>void playPronunciation(card.term).catch(e=>notify((e as Error).message,'error'))}><Volume2 size={17}/></button></div>}
         {defMode&&card.part_of_speech&&<span className="pos">{card.part_of_speech}</span>}
-        {!defMode&&<RecallHints card={card} revealed={hintLetters} onReveal={()=>setHintLetters(n=>Math.min(recallLetterCount(card.term),n+1))}/>} 
+        {!defMode&&<RecallHints card={card} revealed={hintLetters} onReveal={()=>setHintLetters(n=>Math.min(recallLetterCount(card.term),n+1))}/>}
+        </div>
       </div>
       {!judge&&!revealed&&<div className="answer-area"><label>{defMode?'Write the meaning in your own words':'Type the English word or accepted phrase'}<AutoTextarea autoFocus value={answer} onChange={e=>setAnswer(e.target.value)} placeholder={defMode?'A clear paraphrase is enough…':'Your answer…'}/></label><div className="answer-actions"><button className="ghost" onClick={reveal}>Show answer</button><button className="primary" onClick={submit} disabled={busy||!answer.trim()}>{busy?'Checking…':'Check answer'}<Sparkles size={17}/></button></div><small className="shortcut">⌘/Ctrl Enter checks · ⌘/Ctrl ? shows the answer</small></div>}
       {(judge||revealed)&&<div className="result-area">
@@ -542,6 +572,7 @@ function Study({activePool,notify}:{activePool:number|null;notify:(m:string,k?:T
       </div>}
     </article>
     <div className="study-footer"><span><KeyRound size={14}/> {defMode?'Definitions use a fixed 1–7 semantic rubric.':'Infinitive “to” is optional for verb recall.'}</span><span>⌘/Ctrl − blocks this card · Enter or Right Arrow continues</span></div>
+    {imageEditor&&<Modal title="Card image" subtitle={`Shown behind the study prompt for “${card.term}”.`} onClose={()=>setImageEditor(false)}><div className="modal-form"><CardImageControls card={card} notify={notify} onUpdated={updated=>setSession(previous=>previous&&previous.card?{...previous,card:updated}:previous)}/></div></Modal>}
   </div>
 }
 function humanVerdict(s:string){return s.split('_').map(x=>x[0].toUpperCase()+x.slice(1)).join(' ')}
@@ -602,6 +633,63 @@ async function playPronunciation(text:string){
   await activePronunciation.play()
 }
 
+// Card images are served by an authenticated endpoint, so they are fetched as
+// blobs (like pronunciation audio) and cached as object URLs. The image_key
+// changes with every stored file, which makes the cache safe to keep forever.
+// Cinematic reveal styles for the study-prompt image; picked deterministically
+// per card so a card keeps "its" animation between sessions.
+const PROMPT_ANIMATIONS=['emerge','kenburns','iris','tide'] as const
+const cardImageCache=new Map<string,Promise<string>>()
+function cardImageObjectUrl(cardId:number,imageKey:string,size:'full'|'thumb'='full'):Promise<string>{
+  const key=`${imageKey}|${size}`
+  let promise=cardImageCache.get(key)
+  if(!promise){
+    promise=apiBlob(`/flashcards/${cardId}/image/${size==='thumb'?'?size=thumb':''}`).then(blob=>URL.createObjectURL(blob))
+    promise.catch(()=>{cardImageCache.delete(key)})
+    cardImageCache.set(key,promise)
+  }
+  return promise
+}
+
+function CardImageControls({card,notify,onUpdated}:{card:Card;notify:(m:string,k?:Toast['kind'])=>void;onUpdated:(card:Card)=>void}){
+  const [busy,setBusy]=useState(false)
+  const [link,setLink]=useState('')
+  const [preview,setPreview]=useState('')
+  const fileRef=useRef<HTMLInputElement>(null)
+  useEffect(()=>{
+    let alive=true
+    setPreview('')
+    if(card.has_image)void cardImageObjectUrl(card.id,card.image_key).then(url=>{if(alive)setPreview(url)}).catch(()=>{})
+    return()=>{alive=false}
+  },[card.id,card.image_key,card.has_image])
+  const send=async(body:FormData|string)=>{
+    setBusy(true)
+    try{
+      const data=await api<Card&{image_source?:string}>(`/flashcards/${card.id}/image/`,{method:'POST',body},90_000)
+      setLink('')
+      onUpdated(data)
+      notify(data.image_source==='ai'?'The image assistant picked a picture from that page':'Image saved')
+    }catch(e){notify((e as Error).message,'error')}finally{setBusy(false)}
+  }
+  const fromFile=(file?:File)=>{if(!file)return;const form=new FormData();form.append('file',file);void send(form)}
+  const fromLink=()=>{const url=link.trim();if(url&&!busy)void send(JSON.stringify({url}))}
+  const remove=async()=>{
+    setBusy(true)
+    try{onUpdated(await api<Card>(`/flashcards/${card.id}/image/`,{method:'DELETE'}));notify('Image removed')}
+    catch(e){notify((e as Error).message,'error')}finally{setBusy(false)}
+  }
+  return <div className="card-image-block">
+    {card.has_image&&<div className="card-image-preview">{preview?<img src={preview} alt={`Illustration for ${card.term}`}/>:<div className="card-image-loading"><RefreshCw className="spin-slow" size={17}/></div>}</div>}
+    <div className="card-image-link"><input value={link} onChange={e=>setLink(e.target.value)} placeholder="Image link, or a Yandex/Google image page" onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();fromLink()}}}/><button type="button" className="secondary" onClick={fromLink} disabled={busy||!link.trim()}>{busy?'Working…':<><ImagePlus size={15}/>Fetch</>}</button></div>
+    <div className="card-image-actions">
+      <input ref={fileRef} type="file" accept="image/*" hidden onChange={e=>{fromFile(e.target.files?.[0]??undefined);e.target.value=''}}/>
+      <button type="button" className="secondary" onClick={()=>fileRef.current?.click()} disabled={busy}><Upload size={15}/>{card.has_image?'Replace file':'Upload file'}</button>
+      {card.has_image&&<button type="button" className="danger-text" onClick={()=>void remove()} disabled={busy}><Trash2 size={15}/>Remove</button>}
+    </div>
+    <small className="card-image-hint">If the link is a page rather than a picture, the image-assistant model finds the right file on it.</small>
+  </div>
+}
+
 function LibraryPage({activePool,pools,notify,refreshPools}:{activePool:number|null;pools:Pool[];notify:(m:string,k?:Toast['kind'])=>void;refreshPools:()=>Promise<void>}){
   const PAGE_SIZE=30
   const [cards,setCards]=useState<Card[]>([]);const [search,setSearch]=useState('');const [debouncedSearch,setDebouncedSearch]=useState('');const [term,setTerm]=useState('');const [busy,setBusy]=useState(false);const [loading,setLoading]=useState(true);const [edit,setEdit]=useState<Card|null>(null);const [manual,setManual]=useState(false);const [bulk,setBulk]=useState(false);const [expanded,setExpanded]=useState<number|null>(null);const [page,setPage]=useState(1);const [total,setTotal]=useState(0)
@@ -624,6 +712,7 @@ function LibraryPage({activePool,pools,notify,refreshPools}:{activePool:number|n
       {expanded===card.id&&<div className="card-details"><div className="definition-block"><span>DEFINITION</span><p>{card.definition}</p></div>{card.examples.length>0&&<div><span className="detail-label">EXAMPLES</span>{card.examples.map((x,i)=><div className="example" key={i}>“{x.sentence}” {x.note&&<small>{x.note}</small>}</div>)}</div>}
         {Object.keys(card.forms).length>0&&<div><span className="detail-label">FORMS</span><div className="chip-row">{Object.entries(card.forms).map(([k,v])=><span key={k}><b>{k}</b> {v}</span>)}</div></div>}
         <div className="detail-columns"><DetailList title="Synonyms" items={card.synonyms}/><DetailList title="Collocations" items={card.collocations}/><DetailList title="Antonyms" items={card.antonyms}/></div>{card.usage_notes&&<div className="note"><CircleHelp size={16}/>{card.usage_notes}</div>}
+        <div><span className="detail-label">IMAGE</span><CardImageControls card={card} notify={notify} onUpdated={updated=>setCards(previous=>previous.map(existing=>existing.id===updated.id?updated:existing))}/></div>
         <div className="card-actions">{card.suspended&&<button className="ghost unblock-button" onClick={async()=>{await api(`/flashcards/${card.id}/unsuspend/`,{method:'POST'});await load();await refreshPools();notify(`Unblocked “${card.term}”`)}}><Unlock size={16}/>Unblock</button>}<button className="ghost" onClick={()=>void playPronunciation(card.term).catch(e=>notify((e as Error).message,'error'))}><Volume2 size={16}/>Pronounce</button><button className="ghost" onClick={()=>setEdit(card)}><Edit3 size={16}/>Edit</button><button className="danger-text" onClick={async()=>{if(confirm(`Delete “${card.term}”?`)){await api(`/flashcards/${card.id}/`,{method:'DELETE'});await load();await refreshPools()}}}><Trash2 size={16}/>Delete</button></div>
       </div>}
     </div>)}{!cards.length&&<Empty icon={<BookOpen/>} title="No cards found" text="Add a term above and press Generate. Editing stays out of the way until you need it."/>}</>}</div>
@@ -716,7 +805,7 @@ function SettingsPage({value,onSaved,notify}:{value:Settings;onSaved:(s:Settings
   // edits: a non-empty string replaces the key, an empty string removes it.
   const stageToken=(provider:string,token:string)=>setProviderTokens(prev=>({...prev,[provider]:token}))
   const unstageToken=(provider:string)=>setProviderTokens(prev=>{const next={...prev};delete next[provider];return next})
-  const save=async()=>{setBusy(true);try{const payload:any={...form};if(Object.keys(providerTokens).length)payload.provider_tokens=providerTokens;delete payload.has_generation_token;delete payload.has_judge_token;delete payload.token_status;const result=await api<Settings>('/settings/',{method:'PATCH',body:JSON.stringify(payload)});setProviderTokens({});onSaved(result)}catch(e){notify((e as Error).message,'error')}finally{setBusy(false)}}
+  const save=async()=>{setBusy(true);try{const payload:any={...form};if(Object.keys(providerTokens).length)payload.provider_tokens=providerTokens;delete payload.has_generation_token;delete payload.has_judge_token;delete payload.has_image_token;delete payload.token_status;const result=await api<Settings>('/settings/',{method:'PATCH',body:JSON.stringify(payload)});setProviderTokens({});onSaved(result)}catch(e){notify((e as Error).message,'error')}finally{setBusy(false)}}
   const generationModel=models.find(model=>model.id===form.generation_model)
   const judgeModel=models.find(model=>model.id===form.judge_model)
   const tokenSaved=(model?:ModelOption)=>Boolean(model&&form.token_status?.[model.token_provider])
@@ -724,6 +813,7 @@ function SettingsPage({value,onSaved,notify}:{value:Settings;onSaved:(s:Settings
   const tokenPlaceholder=(model?:ModelOption)=>tokenSaved(model)?'••••••••  Leave blank to keep':`Paste ${model?.token_label||'API key'}`
   return <div className="settings-wrap"><section className="panel settings-section"><div className="settings-heading"><div className="settings-icon"><WandSparkles/></div><div><h2>Flashcard generation</h2><p>Choose a public model. LexiLoop handles the router identifier internally.</p></div><span className={`status ${form.has_generation_token?'ok':''}`}>{form.has_generation_token?'Key saved':'Key required'}</span></div><div className="settings-grid"><label>Generation model<ModelInput value={form.generation_model} set={v=>patch('generation_model',v)} models={models} role="generation"/></label><label>{generationModel?.token_label||'Provider API key'}<input type="text" name="lexiloop-generation-provider-token" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} data-lpignore="true" data-1p-ignore="true" data-form-type="other" value={tokenValue(generationModel)} onChange={e=>generationModel&&stageToken(generationModel.token_provider,e.target.value)} placeholder={tokenPlaceholder(generationModel)}/><small>Encrypted at rest and never returned by the API. Saved once per provider.</small></label></div></section>
     <section className="panel settings-section"><div className="settings-heading"><div className="settings-icon"><BrainCircuit/></div><div><h2>Definition judge</h2><p>Use a fast, inexpensive model independently from generation.</p></div><span className={`status ${form.has_judge_token?'ok':''}`}>{form.has_judge_token?'Key saved':'Key required'}</span></div><div className="settings-grid"><label>Judge model<ModelInput value={form.judge_model} set={v=>patch('judge_model',v)} models={models} role="judge"/></label><label>{judgeModel?.token_label||'Provider API key'}<input type="text" name="lexiloop-judge-provider-token" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} data-lpignore="true" data-1p-ignore="true" data-form-type="other" value={tokenValue(judgeModel)} onChange={e=>judgeModel&&stageToken(judgeModel.token_provider,e.target.value)} placeholder={tokenPlaceholder(judgeModel)}/><small>Use the key belonging to the selected provider.</small></label><label>Accept score <b>{form.judge_acceptance_score}</b><input type="range" min={1} max={7} value={form.judge_acceptance_score} onChange={e=>patch('judge_acceptance_score',Number(e.target.value))}/><small>Answers at or above this score count as understood.</small></label><label>Auto-reveal at <b>{form.reveal_threshold} or below</b><input type="range" min={1} max={7} value={form.reveal_threshold} onChange={e=>patch('reveal_threshold',Number(e.target.value))}/></label></div></section>
+    <section className="panel settings-section"><div className="settings-heading"><div className="settings-icon"><ImageIcon/></div><div><h2>Card images</h2><p>An optional picture appears behind the study prompt. AI helps fetch pictures from page links.</p></div><span className={`status ${form.has_image_token?'ok':''}`}>{form.has_image_token?'Key saved':'Key required'}</span></div><div className="settings-grid"><label>Image assistant model<select value={form.image_model} onChange={e=>patch('image_model',e.target.value)}><option value="">Same as the generation model</option>{models.map(model=><option key={model.id} value={model.id}>{model.label} · {model.provider.split(' · ')[0]}</option>)}</select><small>Reads a pasted page link and points at the right image file when a plain download fails. Uses the provider key saved above.</small></label><label>Study images<div className="toggle-row"><button type="button" role="switch" aria-checked={form.show_card_images} className={`switch ${form.show_card_images?'on':''}`} onClick={()=>patch('show_card_images',!form.show_card_images)}><i/></button><span>{form.show_card_images?'Images are shown behind study prompts':'Images stay hidden during study'}</span></div><small>Turning this off hides pictures without deleting them.</small></label></div></section>
     <ProviderKeysSection models={models} status={form.token_status||{}} staged={providerTokens} onRemove={provider=>stageToken(provider,'')} onUndo={unstageToken}/>
     <section className="panel settings-section"><div className="settings-heading"><div className="settings-icon"><BookOpen/></div><div><h2>Study experience</h2><p>Control prompt direction, appearance, and new-card load.</p></div></div><div className="settings-grid three"><label>Card direction<select value={form.study_direction} onChange={e=>patch('study_direction',e.target.value as Direction)}><option value="mixed">Mixed</option><option value="term_to_definition">Word → definition</option><option value="definition_to_term">Definition → word</option></select></label><label>Appearance<select value={form.theme} onChange={e=>patch('theme',e.target.value as Theme)}><option value="dark">Dark</option><option value="light">Light</option><option value="system">System</option></select></label><label>Daily new cards<input type="number" min={0} max={500} value={form.daily_new_limit} onChange={e=>patch('daily_new_limit',Number(e.target.value))}/></label></div><div className="accent-setting"><div><Palette size={18}/><span><b>Interface color</b><small>Choose the accent used for actions, charts, and highlights.</small></span></div><AccentPicker value={form.accent_color} set={v=>patch('accent_color',v)}/></div></section>
     <section className="panel settings-section"><div className="settings-heading"><div className="settings-icon"><Clock3/></div><div><h2>Automatic review timing</h2><p>Correctness is primary; response time chooses Easy, Good, or Hard automatically.</p></div></div><div className="timing-settings"><TimingBand title="Word → definition" description="Writing a free-form meaning takes longer." easy={form.term_to_definition_easy_seconds} good={form.term_to_definition_good_seconds} setEasy={v=>patch('term_to_definition_easy_seconds',v)} setGood={v=>patch('term_to_definition_good_seconds',v)}/><TimingBand title="Definition → word" description="Recalling and typing one term should be faster." easy={form.definition_to_term_easy_seconds} good={form.definition_to_term_good_seconds} setEasy={v=>patch('definition_to_term_easy_seconds',v)} setGood={v=>patch('definition_to_term_good_seconds',v)}/></div></section>
