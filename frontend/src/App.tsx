@@ -36,6 +36,7 @@ const emptySettings:Settings = {
   theme:'system', accent_color:'emerald', study_direction:'mixed', generation_model:'external:deepseek-chat', has_generation_token:false,
   judge_model:'external:deepseek-chat', has_judge_token:false, token_status:{}, judge_acceptance_score:5, reveal_threshold:5,
   image_model:'', has_image_token:false, show_card_images:true,
+  show_images_term_to_definition:true, show_images_definition_to_term:true, image_animations:['droplets','mist','ripple','drift'],
   daily_new_limit:20, learning_steps_minutes:[1,10], relearning_steps_minutes:[10], graduating_interval_days:1,
   easy_interval_days:4, easy_bonus:1.3, hard_multiplier:1.2, lapse_multiplier:.5, minimum_ease:1.3,
   term_to_definition_easy_seconds:12, term_to_definition_good_seconds:35,
@@ -375,7 +376,7 @@ async function reviewCurrentCard(cardId:number,payload:Record<string,unknown>){
 function Study({activePool,notify}:{activePool:number|null;notify:(m:string,k?:Toast['kind'])=>void}){
   type StudyMode = 'due'|'practice'
   type QueueBreakdown = {new:number;learning:number;review:number}
-  type StudySession = {card:Card|null;direction:Direction;prompt?:string;message?:string;mode?:StudyMode;practice_complete?:boolean;queue_count?:number;round_total?:number;round_completed?:number;queue_breakdown?:QueueBreakdown;show_images?:boolean;upcoming_images?:{id:number;image_key:string}[]}
+  type StudySession = {card:Card|null;direction:Direction;prompt?:string;message?:string;mode?:StudyMode;practice_complete?:boolean;queue_count?:number;round_total?:number;round_completed?:number;queue_breakdown?:QueueBreakdown;show_images?:boolean;image_animations?:string[];upcoming_images?:{id:number;image_key:string}[]}
   const [session,setSession]=useState<StudySession|null>(null)
   const [mode,setMode]=useState<StudyMode>('due')
   const [practiceSeen,setPracticeSeen]=useState<number[]>([])
@@ -389,7 +390,7 @@ function Study({activePool,notify}:{activePool:number|null;notify:(m:string,k?:T
   const [responseMs,setResponseMs]=useState<number|null>(null)
   const [hintLetters,setHintLetters]=useState(0)
   const [reviewed,setReviewed]=useState(false)
-  const [promptImage,setPromptImage]=useState<{thumb?:string;full?:string;loaded:boolean}|null>(null)
+  const [promptImage,setPromptImage]=useState<{thumb?:string;full?:string;loaded:boolean;bright?:boolean;portrait?:boolean}|null>(null)
   const [imageEditor,setImageEditor]=useState(false)
   const reviewedRef=useRef(false)
   const cardRef=useRef<HTMLElement>(null)
@@ -421,17 +422,21 @@ function Study({activePool,notify}:{activePool:number|null;notify:(m:string,k?:T
     }
   },[card?.id])
   const showImages=session?.show_images!==false
+  const enabledAnimations=session?.image_animations??ANIMATION_CHOICES.map(choice=>choice.id)
   useEffect(()=>{
     let alive=true
     setPromptImage(null)
     if(!card?.has_image||!showImages)return
     // The tiny blurred thumb paints first; the full image starts its reveal
     // animation only after it is decoded, so the animation never stutters.
-    void cardImageObjectUrl(card.id,card.image_key,'thumb').then(url=>{if(alive)setPromptImage(previous=>({loaded:false,...(previous||{}),thumb:url}))}).catch(()=>{})
+    void cardImageObjectUrl(card.id,card.image_key,'thumb').then(async url=>{
+      const luminance=await measureLuminance(url)
+      if(alive)setPromptImage(previous=>({loaded:false,...(previous||{}),thumb:url,bright:luminance>0.58}))
+    }).catch(()=>{})
     void cardImageObjectUrl(card.id,card.image_key,'full').then(url=>{
       const probe=document.createElement('img')
       probe.src=url
-      const ready=()=>{if(alive)setPromptImage(previous=>({...(previous||{}),full:url,loaded:true}))}
+      const ready=()=>{if(alive)setPromptImage(previous=>({...(previous||{}),full:url,loaded:true,portrait:probe.naturalHeight>probe.naturalWidth*1.15}))}
       if(probe.decode)probe.decode().then(ready,ready);else probe.onload=ready
     }).catch(()=>{})
     return()=>{alive=false}
@@ -554,8 +559,8 @@ function Study({activePool,notify}:{activePool:number|null;notify:(m:string,k?:T
     <div className="study-progress"><div className="study-progress-copy"><span>{mode==='practice'?'Practice round':'Due review round'}</span><small>{roundCompleted} done · {remaining} left{mode==='practice'?' in this pool':''}</small></div><div className="study-progress-track"><div role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={roundCompleted}><i style={{width:`${progress}%`}}/></div>{mode==='due'&&breakdown&&remaining>0&&<div className="queue-chips" aria-label="Remaining queue composition">{breakdown.new>0&&<span className="qc-new" title={`${breakdown.new} brand-new card${breakdown.new===1?'':'s'} within today's limit`}>{breakdown.new} new</span>}{breakdown.learning>0&&<span className="qc-learning" title={`${breakdown.learning} card${breakdown.learning===1?' is':'s are'} in short learning steps — failed or recently added cards return here`}>{breakdown.learning} learning</span>}{breakdown.review>0&&<span className="qc-review" title={`${breakdown.review} graduated card${breakdown.review===1?'':'s'} scheduled for review today`}>{breakdown.review} review</span>}</div>}</div><button className="practice-switch" title={mode==='practice'?'Return to cards scheduled as due by spaced repetition':'Study every card once now without changing its due date'} onClick={()=>mode==='practice'?returnToDue():startPractice()}>{mode==='practice'?'Due reviews':'Practice all'}</button></div>
     <article ref={cardRef} className={`study-card ${judge?.accepted?'correct':judge&&!judge.accepted?'wrong':''}`}>
       <div className="card-topline"><span>{defMode?'Explain this word':'Recall the word'}</span><div className="topline-tools"><button className="topline-image-button" title={card.has_image?'Change this card’s image':'Add an image to this card'} onClick={()=>setImageEditor(true)}>{card.has_image?<ImageIcon size={15}/>:<ImagePlus size={15}/>}</button><span className="state-pill">{mode==='practice'?'practice':card.schedule.state}</span></div></div>
-      <div className={`study-prompt ${promptImage?'has-image':''} ${promptImage?.loaded?'image-loaded':''}`}>
-        {promptImage&&<div className={`prompt-visual anim-${PROMPT_ANIMATIONS[card.id%PROMPT_ANIMATIONS.length]}`} aria-hidden="true">{promptImage.thumb&&<i className="prompt-visual-thumb" style={{backgroundImage:`url(${promptImage.thumb})`}}/>}{promptImage.full&&<i className="prompt-visual-full" style={{backgroundImage:`url(${promptImage.full})`}}/>}<i className="prompt-visual-scrim"/></div>}
+      <div className={`study-prompt ${promptImage?'has-image':''} ${promptImage?.loaded?'image-loaded':''} ${promptImage?.bright?'image-bright':''} ${promptImage?.portrait?'image-portrait':''}`}>
+        {promptImage&&<div className={`prompt-visual anim-${enabledAnimations.length?enabledAnimations[card.id%enabledAnimations.length]:'fade'}`} aria-hidden="true">{promptImage.thumb&&<i className="prompt-visual-thumb" style={{backgroundImage:`url(${promptImage.thumb})`}}/>}{promptImage.full&&<span className="prompt-visual-frame"><i className="prompt-visual-full" style={{backgroundImage:`url(${promptImage.full})`}}/></span>}<i className="prompt-visual-scrim"/></div>}
         <div className="prompt-content">
         <h2>{session.prompt}</h2>{defMode&&card.ipa&&<div className="pronunciation">/{card.ipa}/ <button onClick={()=>void playPronunciation(card.term).catch(e=>notify((e as Error).message,'error'))}><Volume2 size={17}/></button></div>}
         {defMode&&card.part_of_speech&&<span className="pos">{card.part_of_speech}</span>}
@@ -572,7 +577,7 @@ function Study({activePool,notify}:{activePool:number|null;notify:(m:string,k?:T
       </div>}
     </article>
     <div className="study-footer"><span><KeyRound size={14}/> {defMode?'Definitions use a fixed 1–7 semantic rubric.':'Infinitive “to” is optional for verb recall.'}</span><span>⌘/Ctrl − blocks this card · Enter or Right Arrow continues</span></div>
-    {imageEditor&&<Modal title="Card image" subtitle={`Shown behind the study prompt for “${card.term}”.`} onClose={()=>setImageEditor(false)}><div className="modal-form"><CardImageControls card={card} notify={notify} onUpdated={updated=>setSession(previous=>previous&&previous.card?{...previous,card:updated}:previous)}/></div></Modal>}
+    {imageEditor&&<Modal title="Card image" subtitle={`Shown on the flashcard for “${card.term}”.`} onClose={()=>setImageEditor(false)}><div className="modal-form"><CardImageControls card={card} notify={notify} onUpdated={updated=>setSession(previous=>previous&&previous.card?{...previous,card:updated}:previous)}/></div></Modal>}
   </div>
 }
 function humanVerdict(s:string){return s.split('_').map(x=>x[0].toUpperCase()+x.slice(1)).join(' ')}
@@ -636,19 +641,48 @@ async function playPronunciation(text:string){
 // Card images are served by an authenticated endpoint, so they are fetched as
 // blobs (like pronunciation audio) and cached as object URLs. The image_key
 // changes with every stored file, which makes the cache safe to keep forever.
-// Cinematic reveal styles for the study-prompt image; picked deterministically
-// per card so a card keeps "its" animation between sessions.
-const PROMPT_ANIMATIONS=['emerge','kenburns','iris','tide'] as const
+// Cinematic reveal styles for the flashcard image; a card keeps "its"
+// animation between sessions (picked deterministically among the enabled ones).
+const ANIMATION_CHOICES=[
+  {id:'droplets',label:'Watercolor droplets',hint:'soft drops soak through the card and merge'},
+  {id:'mist',label:'Morning mist',hint:'the memory sharpens out of a blur'},
+  {id:'ripple',label:'Ripple',hint:'one drop lands and spreads from the middle'},
+  {id:'drift',label:'Slow drift',hint:'a quiet cinematic pan settles into place'},
+]
 const cardImageCache=new Map<string,Promise<string>>()
 function cardImageObjectUrl(cardId:number,imageKey:string,size:'full'|'thumb'='full'):Promise<string>{
   const key=`${imageKey}|${size}`
   let promise=cardImageCache.get(key)
   if(!promise){
-    promise=apiBlob(`/flashcards/${cardId}/image/${size==='thumb'?'?size=thumb':''}`).then(blob=>URL.createObjectURL(blob))
+    // The v parameter varies with the stored file: the endpoint URL itself is
+    // stable and served with immutable caching, so without it a replaced image
+    // would keep coming out of the browser's HTTP cache.
+    promise=apiBlob(`/flashcards/${cardId}/image/?${size==='thumb'?'size=thumb&':''}v=${encodeURIComponent(imageKey)}`).then(blob=>URL.createObjectURL(blob))
     promise.catch(()=>{cardImageCache.delete(key)})
     cardImageCache.set(key,promise)
   }
   return promise
+}
+// Average luminance of the blur-up thumb decides how strong the text scrim
+// must be: white prompt text over a bright image needs a darker veil.
+function measureLuminance(url:string):Promise<number>{
+  return new Promise(resolve=>{
+    const probe=document.createElement('img')
+    probe.onload=()=>{
+      try{
+        const canvas=document.createElement('canvas')
+        canvas.width=canvas.height=8
+        const context=canvas.getContext('2d')!
+        context.drawImage(probe,0,0,8,8)
+        const data=context.getImageData(0,0,8,8).data
+        let sum=0
+        for(let i=0;i<data.length;i+=4)sum+=(.2126*data[i]+.7152*data[i+1]+.0722*data[i+2])/255
+        resolve(sum/64)
+      }catch{resolve(0)}
+    }
+    probe.onerror=()=>resolve(0)
+    probe.src=url
+  })
 }
 
 function CardImageControls({card,notify,onUpdated}:{card:Card;notify:(m:string,k?:Toast['kind'])=>void;onUpdated:(card:Card)=>void}){
@@ -813,7 +847,9 @@ function SettingsPage({value,onSaved,notify}:{value:Settings;onSaved:(s:Settings
   const tokenPlaceholder=(model?:ModelOption)=>tokenSaved(model)?'••••••••  Leave blank to keep':`Paste ${model?.token_label||'API key'}`
   return <div className="settings-wrap"><section className="panel settings-section"><div className="settings-heading"><div className="settings-icon"><WandSparkles/></div><div><h2>Flashcard generation</h2><p>Choose a public model. LexiLoop handles the router identifier internally.</p></div><span className={`status ${form.has_generation_token?'ok':''}`}>{form.has_generation_token?'Key saved':'Key required'}</span></div><div className="settings-grid"><label>Generation model<ModelInput value={form.generation_model} set={v=>patch('generation_model',v)} models={models} role="generation"/></label><label>{generationModel?.token_label||'Provider API key'}<input type="text" name="lexiloop-generation-provider-token" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} data-lpignore="true" data-1p-ignore="true" data-form-type="other" value={tokenValue(generationModel)} onChange={e=>generationModel&&stageToken(generationModel.token_provider,e.target.value)} placeholder={tokenPlaceholder(generationModel)}/><small>Encrypted at rest and never returned by the API. Saved once per provider.</small></label></div></section>
     <section className="panel settings-section"><div className="settings-heading"><div className="settings-icon"><BrainCircuit/></div><div><h2>Definition judge</h2><p>Use a fast, inexpensive model independently from generation.</p></div><span className={`status ${form.has_judge_token?'ok':''}`}>{form.has_judge_token?'Key saved':'Key required'}</span></div><div className="settings-grid"><label>Judge model<ModelInput value={form.judge_model} set={v=>patch('judge_model',v)} models={models} role="judge"/></label><label>{judgeModel?.token_label||'Provider API key'}<input type="text" name="lexiloop-judge-provider-token" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} data-lpignore="true" data-1p-ignore="true" data-form-type="other" value={tokenValue(judgeModel)} onChange={e=>judgeModel&&stageToken(judgeModel.token_provider,e.target.value)} placeholder={tokenPlaceholder(judgeModel)}/><small>Use the key belonging to the selected provider.</small></label><label>Accept score <b>{form.judge_acceptance_score}</b><input type="range" min={1} max={7} value={form.judge_acceptance_score} onChange={e=>patch('judge_acceptance_score',Number(e.target.value))}/><small>Answers at or above this score count as understood.</small></label><label>Auto-reveal at <b>{form.reveal_threshold} or below</b><input type="range" min={1} max={7} value={form.reveal_threshold} onChange={e=>patch('reveal_threshold',Number(e.target.value))}/></label></div></section>
-    <section className="panel settings-section"><div className="settings-heading"><div className="settings-icon"><ImageIcon/></div><div><h2>Card images</h2><p>An optional picture appears behind the study prompt. AI helps fetch pictures from page links.</p></div><span className={`status ${form.has_image_token?'ok':''}`}>{form.has_image_token?'Key saved':'Key required'}</span></div><div className="settings-grid"><label>Image assistant model<select value={form.image_model} onChange={e=>patch('image_model',e.target.value)}><option value="">Same as the generation model</option>{models.map(model=><option key={model.id} value={model.id}>{model.label} · {model.provider.split(' · ')[0]}</option>)}</select><small>Reads a pasted page link and points at the right image file when a plain download fails. Uses the provider key saved above.</small></label><label>Study images<div className="toggle-row"><button type="button" role="switch" aria-checked={form.show_card_images} className={`switch ${form.show_card_images?'on':''}`} onClick={()=>patch('show_card_images',!form.show_card_images)}><i/></button><span>{form.show_card_images?'Images are shown behind study prompts':'Images stay hidden during study'}</span></div><small>Turning this off hides pictures without deleting them.</small></label></div></section>
+    <section className="panel settings-section"><div className="settings-heading"><div className="settings-icon"><ImageIcon/></div><div><h2>Card images</h2><p>An optional picture appears on the flashcard during study. AI helps fetch pictures from page links.</p></div><span className={`status ${form.has_image_token?'ok':''}`}>{form.has_image_token?'Key saved':'Key required'}</span></div><div className="settings-grid"><label>Image assistant model<select value={form.image_model} onChange={e=>patch('image_model',e.target.value)}><option value="">Same as the generation model</option>{models.map(model=><option key={model.id} value={model.id}>{model.label} · {model.provider.split(' · ')[0]}</option>)}</select><small>Reads a pasted page link and points at the right image file when a plain download fails. Uses the provider key saved above.</small></label><label>Study images<div className="toggle-row"><button type="button" role="switch" aria-checked={form.show_card_images} className={`switch ${form.show_card_images?'on':''}`} onClick={()=>patch('show_card_images',!form.show_card_images)}><i/></button><span>{form.show_card_images?'Images are shown on flashcards':'Images stay hidden during study'}</span></div><small>Turning this off hides pictures without deleting them.</small></label>
+    <div className="settings-field">Where images appear<div className="check-list"><label className="check-row"><input type="checkbox" checked={form.show_images_term_to_definition} onChange={e=>patch('show_images_term_to_definition',e.target.checked)}/><span>Word → definition tasks</span></label><label className="check-row"><input type="checkbox" checked={form.show_images_definition_to_term} onChange={e=>patch('show_images_definition_to_term',e.target.checked)}/><span>Definition → word tasks<small>a picture can hint at the answer — turn off for stricter recall</small></span></label></div><small>Applies while study images are on.</small></div>
+    <div className="settings-field">Reveal animations<div className="check-list">{ANIMATION_CHOICES.map(choice=><label className="check-row" key={choice.id}><input type="checkbox" checked={form.image_animations.includes(choice.id)} onChange={e=>patch('image_animations',e.target.checked?ANIMATION_CHOICES.map(x=>x.id).filter(id=>id===choice.id||form.image_animations.includes(id)):form.image_animations.filter(id=>id!==choice.id))}/><span>{choice.label}<small>{choice.hint}</small></span></label>)}</div><small>Each card keeps one of the checked animations. Uncheck all for a plain fade.</small></div></div></section>
     <ProviderKeysSection models={models} status={form.token_status||{}} staged={providerTokens} onRemove={provider=>stageToken(provider,'')} onUndo={unstageToken}/>
     <section className="panel settings-section"><div className="settings-heading"><div className="settings-icon"><BookOpen/></div><div><h2>Study experience</h2><p>Control prompt direction, appearance, and new-card load.</p></div></div><div className="settings-grid three"><label>Card direction<select value={form.study_direction} onChange={e=>patch('study_direction',e.target.value as Direction)}><option value="mixed">Mixed</option><option value="term_to_definition">Word → definition</option><option value="definition_to_term">Definition → word</option></select></label><label>Appearance<select value={form.theme} onChange={e=>patch('theme',e.target.value as Theme)}><option value="dark">Dark</option><option value="light">Light</option><option value="system">System</option></select></label><label>Daily new cards<input type="number" min={0} max={500} value={form.daily_new_limit} onChange={e=>patch('daily_new_limit',Number(e.target.value))}/></label></div><div className="accent-setting"><div><Palette size={18}/><span><b>Interface color</b><small>Choose the accent used for actions, charts, and highlights.</small></span></div><AccentPicker value={form.accent_color} set={v=>patch('accent_color',v)}/></div></section>
     <section className="panel settings-section"><div className="settings-heading"><div className="settings-icon"><Clock3/></div><div><h2>Automatic review timing</h2><p>Correctness is primary; response time chooses Easy, Good, or Hard automatically.</p></div></div><div className="timing-settings"><TimingBand title="Word → definition" description="Writing a free-form meaning takes longer." easy={form.term_to_definition_easy_seconds} good={form.term_to_definition_good_seconds} setEasy={v=>patch('term_to_definition_easy_seconds',v)} setGood={v=>patch('term_to_definition_good_seconds',v)}/><TimingBand title="Definition → word" description="Recalling and typing one term should be faster." easy={form.definition_to_term_easy_seconds} good={form.definition_to_term_good_seconds} setEasy={v=>patch('definition_to_term_easy_seconds',v)} setGood={v=>patch('definition_to_term_good_seconds',v)}/></div></section>

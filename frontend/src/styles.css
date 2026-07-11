@@ -730,3 +730,99 @@ html:has(.sidebar.open),body:has(.sidebar.open){overflow:hidden}
 
 /* v1.16 the answer block breathes below an image-backed prompt */
 .study-prompt.has-image+.answer-area{padding-top:26px}
+
+/* v1.17 queue chips are informational, not interactive */
+.queue-chips span{cursor:default}
+
+/* v1.17 Safari draws native chrome inside textareas that squares the right
+   corners; the auto-growing answer box never needs its own scrollbar */
+.answer-area textarea{appearance:none;-webkit-appearance:none;overflow-y:hidden;scrollbar-width:none}
+.answer-area textarea::-webkit-scrollbar{display:none}
+
+/* v1.17 settings checkboxes */
+.settings-grid .settings-field{font-size:12px;color:var(--muted);font-weight:600;display:flex;flex-direction:column;gap:7px}
+.check-list{display:grid;gap:9px;padding:2px 0}
+.check-row{display:flex;align-items:flex-start;gap:10px;font-weight:550;color:var(--text);font-size:12px;cursor:pointer}
+.check-row input[type=checkbox]{width:16px;height:16px;min-height:0;padding:0;margin:1px 0 0;flex:none;accent-color:var(--primary);border:0;background:transparent}
+.check-row span{display:flex;flex-direction:column;gap:2px}
+.check-row span small{color:var(--muted2);font-size:10px;font-weight:500;line-height:1.4}
+
+/* v1.17 the reveal animation moved to a frame wrapper so it can compose with
+   the portrait feather mask on the image itself */
+.prompt-visual-frame{position:absolute;inset:0;opacity:0;will-change:opacity,transform,filter;display:block}
+.prompt-visual-frame .prompt-visual-full{opacity:1}
+
+/* Watercolor droplets: soft-rimmed drops soak in at organic spots, grow at
+   different paces, and merge until the whole picture is wet through. The
+   feathered radial gradients mean there is not one straight edge anywhere. */
+.image-loaded .anim-droplets .prompt-visual-frame{
+  /* closest-side keeps each feathered drop inside its own mask tile; a
+     default farthest-corner gradient overflows the tile and gets clipped
+     into straight rectangle edges */
+  -webkit-mask-image:radial-gradient(circle closest-side,#000 55%,transparent 98%),radial-gradient(circle closest-side,#000 52%,transparent 98%),radial-gradient(circle closest-side,#000 58%,transparent 98%),radial-gradient(circle closest-side,#000 50%,transparent 98%),radial-gradient(circle closest-side,#000 56%,transparent 98%),radial-gradient(circle closest-side,#000 53%,transparent 98%);
+  mask-image:radial-gradient(circle closest-side,#000 55%,transparent 98%),radial-gradient(circle closest-side,#000 52%,transparent 98%),radial-gradient(circle closest-side,#000 58%,transparent 98%),radial-gradient(circle closest-side,#000 50%,transparent 98%),radial-gradient(circle closest-side,#000 56%,transparent 98%),radial-gradient(circle closest-side,#000 53%,transparent 98%);
+  -webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;
+  -webkit-mask-position:22% 26%,74% 14%,45% 71%,87% 68%,12% 79%,60% 42%;
+  mask-position:22% 26%,74% 14%,45% 71%,87% 68%,12% 79%,60% 42%;
+  animation:prompt-droplets 3.6s cubic-bezier(.3,.55,.35,1) forwards;
+}
+@keyframes prompt-droplets{
+  0%{opacity:0;-webkit-mask-size:0% 0%,0% 0%,0% 0%,0% 0%,0% 0%,0% 0%;mask-size:0% 0%,0% 0%,0% 0%,0% 0%,0% 0%,0% 0%}
+  5%{opacity:1}
+  18%{-webkit-mask-size:52% 52%,16% 16%,0% 0%,0% 0%,0% 0%,0% 0%;mask-size:52% 52%,16% 16%,0% 0%,0% 0%,0% 0%,0% 0%}
+  36%{-webkit-mask-size:96% 96%,58% 58%,44% 44%,12% 12%,0% 0%,0% 0%;mask-size:96% 96%,58% 58%,44% 44%,12% 12%,0% 0%,0% 0%}
+  57%{-webkit-mask-size:150% 150%,110% 110%,88% 88%,60% 60%,42% 42%,14% 14%;mask-size:150% 150%,110% 110%,88% 88%,60% 60%,42% 42%,14% 14%}
+  78%{-webkit-mask-size:280% 280%,220% 220%,185% 185%,150% 150%,120% 120%,88% 88%;mask-size:280% 280%,220% 220%,185% 185%,150% 150%,120% 120%,88% 88%}
+  100%{opacity:1;-webkit-mask-size:560% 560%,530% 530%,510% 510%,490% 490%,470% 470%,450% 450%;mask-size:560% 560%,530% 530%,510% 510%,490% 490%,470% 470%,450% 450%}
+}
+
+/* Ripple: one drop lands just above the middle and spreads with a soft rim. */
+.image-loaded .anim-ripple .prompt-visual-frame{
+  -webkit-mask-image:radial-gradient(circle closest-side,#000 58%,transparent 98%);mask-image:radial-gradient(circle closest-side,#000 58%,transparent 98%);
+  -webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;
+  -webkit-mask-position:50% 44%;mask-position:50% 44%;
+  animation:prompt-ripple 2.8s cubic-bezier(.32,.62,.28,1) forwards;
+}
+@keyframes prompt-ripple{
+  0%{opacity:0;-webkit-mask-size:0% 0%;mask-size:0% 0%}
+  7%{opacity:1}
+  100%{opacity:1;-webkit-mask-size:680% 680%;mask-size:680% 680%}
+}
+
+/* Morning mist: the memory sharpens out of a blur. */
+.image-loaded .anim-mist .prompt-visual-frame{animation:prompt-mist 2.3s cubic-bezier(.22,.82,.26,1) forwards}
+@keyframes prompt-mist{
+  0%{opacity:0;filter:blur(26px) brightness(1.22) saturate(.7);transform:scale(1.14)}
+  55%{opacity:1}
+  100%{opacity:1;filter:blur(0) brightness(1) saturate(1);transform:scale(1)}
+}
+
+/* Slow drift: a quiet pan settles, slightly hazy at first. */
+.image-loaded .anim-drift .prompt-visual-frame{animation:prompt-drift 6.4s cubic-bezier(.2,.6,.25,1) forwards}
+@keyframes prompt-drift{
+  0%{opacity:0;transform:scale(1.26) translate(2.2%,-1.6%);filter:blur(11px)}
+  17%{opacity:1}
+  100%{opacity:1;transform:scale(1.04) translate(0,0);filter:blur(0)}
+}
+
+.image-loaded .anim-fade .prompt-visual-frame{animation:prompt-frame-fade .7s ease forwards}
+@keyframes prompt-frame-fade{to{opacity:1}}
+@media(prefers-reduced-motion:reduce){
+  .image-loaded .prompt-visual .prompt-visual-frame{-webkit-mask-image:none!important;mask-image:none!important;animation:prompt-frame-fade .5s ease forwards!important}
+}
+
+/* v1.17 a brighter image gets a deeper veil so white prompt text stays readable */
+.image-bright .prompt-visual-scrim{background:linear-gradient(180deg,rgba(9,11,15,.76),rgba(9,11,15,.6) 46%,rgba(9,11,15,.8))}
+
+/* v1.17 portrait images float beside the text as a soft-edged pane instead of
+   being force-cropped to the card; the blurred thumb keeps the ambience */
+@media(min-width:561px){
+  .image-portrait .prompt-visual-full{
+    inset:0 0 0 auto;width:54%;
+    -webkit-mask-image:radial-gradient(ellipse 82% 92% at 62% 50%,#000 40%,transparent 76%);
+    mask-image:radial-gradient(ellipse 82% 92% at 62% 50%,#000 40%,transparent 76%);
+    -webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;
+    -webkit-mask-size:100% 100%;mask-size:100% 100%;
+  }
+  .image-portrait .prompt-content{padding-right:36%}
+}

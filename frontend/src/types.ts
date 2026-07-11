@@ -10,6 +10,7 @@ export interface Settings {
   theme: Theme; accent_color: AccentColor; study_direction: Direction; generation_model: string; has_generation_token: boolean;
   judge_model: string; has_judge_token: boolean; token_status: Record<string, boolean>;
   image_model: string; has_image_token: boolean; show_card_images: boolean;
+  show_images_term_to_definition: boolean; show_images_definition_to_term: boolean; image_animations: string[];
   judge_acceptance_score: number; reveal_threshold: number;
   daily_new_limit: number; learning_steps_minutes: number[]; relearning_steps_minutes: number[];
   graduating_interval_days: number; easy_interval_days: number; easy_bonus: number;
