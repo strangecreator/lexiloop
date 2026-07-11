@@ -4,7 +4,7 @@ export interface ModelOption {
 }
 export type Theme = 'dark' | 'light' | 'system'
 export type AccentColor = 'violet' | 'indigo' | 'blue' | 'teal' | 'emerald' | 'rose' | 'orange'
-export type Direction = 'mixed' | 'term_to_definition' | 'definition_to_term'
+export type Direction = 'mixed' | 'term_to_definition' | 'definition_to_term' | 'term_to_sentence'
 
 export interface Settings {
   theme: Theme; accent_color: AccentColor; study_direction: Direction; generation_model: string; has_generation_token: boolean;
@@ -13,11 +13,14 @@ export interface Settings {
   show_images_term_to_definition: boolean; show_images_definition_to_term: boolean; image_animations: string[];
   image_animation_durations: Record<string, number>; image_prefetch_count: number;
   judge_acceptance_score: number; reveal_threshold: number;
+  sentence_judge_model: string; has_sentence_token: boolean; sentence_acceptance_score: number; sentence_reveal_threshold: number;
+  show_images_term_to_sentence: boolean;
   daily_new_limit: number; learning_steps_minutes: number[]; relearning_steps_minutes: number[];
   graduating_interval_days: number; easy_interval_days: number; easy_bonus: number;
   hard_multiplier: number; lapse_multiplier: number; minimum_ease: number;
   term_to_definition_easy_seconds: number; term_to_definition_good_seconds: number;
   definition_to_term_easy_seconds: number; definition_to_term_good_seconds: number;
+  term_to_sentence_easy_seconds: number; term_to_sentence_good_seconds: number;
 }
 export interface Pool { id:number; name:string; description:string; accent:string; archived:boolean; card_count:number; due_count:number; created_at:string; updated_at:string }
 export interface Schedule { state:string; due_at:string; interval_days:number; ease_factor:number; step_index:number; repetitions:number; lapses:number; last_reviewed_at:string|null }

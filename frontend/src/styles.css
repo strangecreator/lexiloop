@@ -865,3 +865,8 @@ html:has(.sidebar.open),body:has(.sidebar.open){overflow:hidden}
 
 /* v1.19 droplets is opt-in and slower by default */
 .image-loaded .anim-droplets .prompt-visual-frame{animation-duration:var(--dur-droplets,8s)}
+
+/* v1.20 unified 2.5s default reveal durations (droplets keeps its slow 8s) */
+.image-loaded .anim-mist .prompt-visual-frame{animation-duration:var(--dur-mist,2.5s)}
+.image-loaded .anim-ripple .prompt-visual-frame{animation-duration:var(--dur-ripple,2.5s)}
+.image-loaded .anim-drift .prompt-visual-frame{animation-duration:var(--dur-drift,2.5s)}
