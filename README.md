@@ -2,7 +2,7 @@
 
 LexiLoop is a Django + React platform for building and retaining English vocabulary. It combines one-field AI card creation, semantic answer judging, durable high-volume generation, server-side pagination, PostgreSQL storage, HTTPS deployment, and an Anki-inspired review scheduler with a polished responsive interface.
 
-Version **1.13.0** polishes the mobile experience: the Study counter no longer promises a card that was already answered, the vertical activity heatmap fills the width of narrow screens, and the mobile navigation drawer is full-width, scrollable, and locks the page behind it.
+Version **1.14.0** continues the interface polish: the activity heatmap uses absolute brightness thresholds, the sidebar scrolls as one panel, AI failure messages display in full, the library search stays full-width on small phones, and the bulk-generation popup supports Cmd/Ctrl+Enter.
 
 ## Highlights
 
@@ -21,6 +21,23 @@ Version **1.13.0** polishes the mobile experience: the Study counter no longer p
 - Dynamic page titles, cached pronunciation audio, custom favicon, and responsive UI.
 - Dedicated routes: `/overview`, `/study`, `/library`, `/analytics`, `/settings`, `/auth`, `/register`, and `/admin/`.
 - Unknown URLs return a custom LexiLoop 404 page instead of the SPA shell.
+
+## v1.14.0 changes
+
+### Absolute heatmap brightness
+
+Cell tint previously scaled against the user's own busiest day of the year, so 2 reviews on a quiet account already rendered at full brightness. Levels now use fixed cutoffs — 1–9, 10–49, 50–119, and 120+ reviews per day — and hovering the legend squares shows each range.
+
+### One scroll region in the sidebar
+
+The pool list no longer scrolls inside the panel; the entire sidebar scrolls naturally on desktop (thin scrollbar) and mobile (no scrollbar).
+
+### Smaller fixes
+
+- AI usage → Recent failures no longer clips error bodies at 30px; messages wrap in full.
+- The library search field stays full-width below 431px (the two-column action grid had trapped it in one column).
+- Cmd/Ctrl+Enter submits both stages of the bulk popup — "Normalize list" and "Start job" — even when the form has no focus.
+- Term chips in the bulk review step keep their natural height when they fit on one line.
 
 ## v1.13.0 changes
 
