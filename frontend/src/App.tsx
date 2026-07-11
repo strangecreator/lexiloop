@@ -310,10 +310,13 @@ function ActivityHeatmap({rows}:{rows:{day:string;reviews:number}[]}){
     if(!weeks.length||weeks[weeks.length-1].length===7)weeks.push([])
     weeks[weeks.length-1].push({date,key:dateKey(date),count:byDay.get(dateKey(date))??0})
   }
-  const max=Math.max(1,...rows.map(row=>row.reviews))
-  const level=(count:number)=>count===0?0:Math.min(4,Math.max(1,Math.ceil(4*count/max)))
+  // Absolute thresholds: scaling against the user's own yearly maximum made a
+  // 2-review day on a quiet account as bright as a 100-review day elsewhere.
+  const LEVEL_THRESHOLDS=[1,10,50,120]
+  const level=(count:number)=>LEVEL_THRESHOLDS.reduce((current,min,index)=>count>=min?index+1:current,0)
+  const LEVEL_TITLES=['No reviews','1–9 reviews','10–49 reviews','50–119 reviews','120+ reviews']
   const cellTitle=(cell:{date:Date;count:number})=>`${cell.count} review${cell.count===1?'':'s'} on ${cell.date.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}`
-  const legend=<div className="activity-legend"><span>Less</span>{[0,1,2,3,4].map(value=><span key={value} className={`activity-cell level-${value}`}/>)}<span>More</span></div>
+  const legend=<div className="activity-legend"><span>Less</span>{[0,1,2,3,4].map(value=><span key={value} className={`activity-cell level-${value}`} title={LEVEL_TITLES[value]}/>)}<span>More</span></div>
   if(vertical){
     const recentFirst=[...weeks].reverse()
     const shown=expanded?recentFirst:recentFirst.slice(0,VERTICAL_RECENT_WEEKS)
