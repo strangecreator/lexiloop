@@ -2,7 +2,7 @@
 
 LexiLoop is a Django + React platform for building and retaining English vocabulary. It combines one-field AI card creation, semantic answer judging, durable high-volume generation, server-side pagination, PostgreSQL storage, HTTPS deployment, and an Anki-inspired review scheduler with a polished responsive interface.
 
-Version **1.20.0** introduces the third study task — **Word → sentence**, graded by a dedicated LLM usage judge — recalibrates the definition-judge rubric so the full 1–7 scale is actually used, and unifies reveal-animation defaults at 2.5 seconds.
+Version **1.21.0** replaces the single Card direction select with per-task checkboxes (the sentence task is opt-in) and removes the obsolete Auto-reveal thresholds.
 
 ## Highlights
 
@@ -21,6 +21,16 @@ Version **1.20.0** introduces the third study task — **Word → sentence**, gr
 - Dynamic page titles, cached pronunciation audio, custom favicon, and responsive UI.
 - Dedicated routes: `/overview`, `/study`, `/library`, `/analytics`, `/settings`, `/auth`, `/register`, and `/admin/`.
 - Unknown URLs return a custom LexiLoop 404 page instead of the SPA shell.
+
+## v1.21.0 changes
+
+### Task types as checkboxes
+
+Settings → Study experience now offers three independent checkboxes — Word → definition, Definition → word, Word → sentence — instead of a "one or mixed" select. Due cards rotate deterministically through the enabled set; at least one type always stays on. The sentence task is unchecked by default. The migration converts existing profiles (`mixed` becomes the two classic tasks, keeping sentences opt-in; a single selection stays itself); `study_direction` is replaced by the `study_directions` list in the API.
+
+### Auto-reveal removed
+
+The "Auto-reveal at" thresholds dated from the old two-step study flow. Since checking an answer already shows the full card, `should_reveal` controlled nothing — both sliders, both profile fields, and the response flag are gone.
 
 ## v1.20.0 changes
 
