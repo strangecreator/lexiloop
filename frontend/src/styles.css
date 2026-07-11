@@ -615,3 +615,11 @@ textarea{resize:none!important;overflow-y:hidden;max-height:420px;scrollbar-gutt
   .answer-actions button,.next-block button{width:100%}
   .modal-head,.modal-form,.editor-grid{padding-inline:14px}
 }
+
+/* v1.13 vertical heatmap fills the available width: cells scale as squares up
+   to a capped grid that centers itself on tablets */
+.activity-vertical{width:100%;max-width:345px;margin-inline:auto;justify-items:stretch}
+.activity-v-row{grid-template-columns:40px repeat(7,1fr)}
+.activity-v-row .activity-cell{width:auto;height:auto;aspect-ratio:1;border-radius:5px}
+.activity-v-foot{max-width:none}
+
