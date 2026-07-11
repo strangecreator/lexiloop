@@ -162,6 +162,7 @@ class ProfileSerializer(serializers.ModelSerializer):
     has_generation_token = serializers.SerializerMethodField()
     has_judge_token = serializers.SerializerMethodField()
     has_image_token = serializers.SerializerMethodField()
+    has_sentence_token = serializers.SerializerMethodField()
 
     class Meta:
         model = UserProfile
@@ -172,11 +173,13 @@ class ProfileSerializer(serializers.ModelSerializer):
             'image_animation_durations', 'image_prefetch_count',
             'provider_tokens', 'token_status',
             'judge_acceptance_score', 'reveal_threshold',
+            'sentence_judge_model', 'has_sentence_token', 'sentence_acceptance_score', 'sentence_reveal_threshold',
             'daily_new_limit', 'learning_steps_minutes', 'relearning_steps_minutes',
             'graduating_interval_days', 'easy_interval_days', 'easy_bonus', 'hard_multiplier',
             'lapse_multiplier', 'minimum_ease',
             'term_to_definition_easy_seconds', 'term_to_definition_good_seconds',
             'definition_to_term_easy_seconds', 'definition_to_term_good_seconds',
+            'term_to_sentence_easy_seconds', 'term_to_sentence_good_seconds',
         ]
 
     @staticmethod
@@ -197,6 +200,9 @@ class ProfileSerializer(serializers.ModelSerializer):
     def get_has_image_token(self, obj):
         return self._has_provider_token(obj, obj.image_model or obj.generation_model)
 
+    def get_has_sentence_token(self, obj):
+        return self._has_provider_token(obj, obj.sentence_judge_model or obj.judge_model)
+
     def validate_provider_tokens(self, value):
         unknown = sorted(set(value) - set(TOKEN_PROVIDERS))
         if unknown:
@@ -215,6 +221,12 @@ class ProfileSerializer(serializers.ModelSerializer):
 
     def validate_image_model(self, value):
         # Empty string means "use the generation model".
+        if value and not is_supported_model(value):
+            raise serializers.ValidationError('Choose one of the public models offered by LexiLoop.')
+        return value
+
+    def validate_sentence_judge_model(self, value):
+        # Empty string means "use the definition judge model".
         if value and not is_supported_model(value):
             raise serializers.ValidationError('Choose one of the public models offered by LexiLoop.')
         return value
@@ -268,6 +280,7 @@ class ProfileSerializer(serializers.ModelSerializer):
         pairs = (
             ('term_to_definition_easy_seconds', 'term_to_definition_good_seconds', 'Word → definition'),
             ('definition_to_term_easy_seconds', 'definition_to_term_good_seconds', 'Definition → word'),
+            ('term_to_sentence_easy_seconds', 'term_to_sentence_good_seconds', 'Word → sentence'),
         )
         for easy_field, good_field, label in pairs:
             easy = attrs.get(easy_field, getattr(self.instance, easy_field, None))

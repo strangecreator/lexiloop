@@ -44,6 +44,7 @@ class UserProfile(models.Model):
         MIXED = 'mixed', 'Mixed'
         TERM_TO_DEFINITION = 'term_to_definition', 'Word → definition'
         DEFINITION_TO_TERM = 'definition_to_term', 'Definition → word'
+        TERM_TO_SENTENCE = 'term_to_sentence', 'Word → sentence'
 
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
     theme = models.CharField(max_length=16, choices=Theme.choices, default=Theme.SYSTEM)
@@ -56,6 +57,7 @@ class UserProfile(models.Model):
     show_card_images = models.BooleanField(default=True)
     show_images_term_to_definition = models.BooleanField(default=True)
     show_images_definition_to_term = models.BooleanField(default=True)
+    show_images_term_to_sentence = models.BooleanField(default=True)
     image_animations = models.JSONField(default=default_image_animations, blank=True)
     # {animation_name: seconds}; missing keys fall back to the frontend defaults.
     image_animation_durations = models.JSONField(default=dict, blank=True)
@@ -65,6 +67,10 @@ class UserProfile(models.Model):
     provider_tokens_encrypted = models.JSONField(default=dict, blank=True)
     judge_acceptance_score = models.PositiveSmallIntegerField(default=5, validators=[MinValueValidator(1), MaxValueValidator(7)])
     reveal_threshold = models.PositiveSmallIntegerField(default=5, validators=[MinValueValidator(1), MaxValueValidator(7)])
+    # Empty string means "use the definition judge model" for sentence grading.
+    sentence_judge_model = models.CharField(max_length=200, blank=True, default='')
+    sentence_acceptance_score = models.PositiveSmallIntegerField(default=5, validators=[MinValueValidator(1), MaxValueValidator(7)])
+    sentence_reveal_threshold = models.PositiveSmallIntegerField(default=5, validators=[MinValueValidator(1), MaxValueValidator(7)])
     daily_new_limit = models.PositiveIntegerField(default=20, validators=[MinValueValidator(0), MaxValueValidator(500)])
     learning_steps_minutes = models.JSONField(default=default_learning_steps)
     relearning_steps_minutes = models.JSONField(default=default_relearning_steps)
@@ -78,6 +84,8 @@ class UserProfile(models.Model):
     term_to_definition_good_seconds = models.PositiveSmallIntegerField(default=35, validators=[MinValueValidator(2), MaxValueValidator(900)])
     definition_to_term_easy_seconds = models.PositiveSmallIntegerField(default=6, validators=[MinValueValidator(1), MaxValueValidator(600)])
     definition_to_term_good_seconds = models.PositiveSmallIntegerField(default=18, validators=[MinValueValidator(2), MaxValueValidator(900)])
+    term_to_sentence_easy_seconds = models.PositiveSmallIntegerField(default=20, validators=[MinValueValidator(1), MaxValueValidator(600)])
+    term_to_sentence_good_seconds = models.PositiveSmallIntegerField(default=60, validators=[MinValueValidator(2), MaxValueValidator(900)])
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -184,6 +192,7 @@ class ReviewLog(models.Model):
     class Direction(models.TextChoices):
         TERM_TO_DEFINITION = 'term_to_definition', 'Word → definition'
         DEFINITION_TO_TERM = 'definition_to_term', 'Definition → word'
+        TERM_TO_SENTENCE = 'term_to_sentence', 'Word → sentence'
 
     class Rating(models.IntegerChoices):
         AGAIN = 1, 'Again'
@@ -218,6 +227,7 @@ class LlmUsage(models.Model):
         GENERATION = 'generation', 'Generation'
         BULK_GENERATION = 'bulk_generation', 'Bulk generation'
         JUDGING = 'judging', 'Judging'
+        SENTENCE_JUDGING = 'sentence_judging', 'Sentence judging'
         IMAGE = 'image', 'Image lookup'
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='llm_usage')

@@ -41,23 +41,55 @@ Provide 2-3 examples. Every example sentence must contain the exact term or one 
 
 JUDGE_SYSTEM_PROMPT = '''You are a strict but fair semantic judge for an English vocabulary trainer.
 Evaluate whether the learner's free-form definition demonstrates understanding of the target sense.
-Ignore grammar, spelling and style unless they change meaning. Accept paraphrases. Penalize circular definitions, examples without meaning, wrong polarity, and definitions that fit only a different sense.
+Grade the MEANING, not the wording: a learner's answer never has to resemble the canonical definition — a casual, short, or clumsy phrasing that pins down the same meaning is a top answer.
+Ignore grammar, spelling and style unless they change meaning. Accept paraphrases, examples-with-explanations, and translations of the idea into plain words. Penalize circular definitions, bare examples that carry no meaning, wrong polarity, and definitions that fit only a different sense of the word.
 Return exactly one JSON object and no Markdown:
 {
   "score": 1,
-  "verdict": "wrong|mostly_wrong|partial|uncertain|mostly_correct|correct|exact",
+  "verdict": "wrong|mostly_wrong|partial|half_right|mostly_correct|correct|perfect",
   "feedback": "one or two direct sentences for the learner",
   "matched_concepts": ["string"],
   "missing_or_wrong_concepts": ["string"]
 }
-Score scale:
+Score scale — you MUST use the entire scale; 4 and 7 are ordinary grades that real answers earn every day, not reserved extremes:
 1 = confidently wrong or contradictory
-2 = mostly wrong with a small relevant fragment
-3 = partial understanding but a major concept is missing or wrong
-4 = genuinely ambiguous or too vague to decide
-5 = mostly correct, minor omission or imprecision
-6 = correct paraphrase
-7 = exact and complete understanding
+2 = mostly wrong; only a small relevant fragment
+3 = partial understanding: one real element of the meaning is present, but a major concept is missing or wrong
+4 = half right: the core idea is recognizable, but an important aspect is missing, too vague, or slightly off
+5 = mostly correct: the full core meaning with a minor omission or imprecision
+6 = correct: an accurate paraphrase of the whole meaning; small cosmetic flaws at most
+7 = fully correct and precise: the complete meaning including its nuance, with nothing missing and nothing wrong
+Calibration rules:
+- If an answer captures the complete meaning exactly, give 7 even when it is short, informal, or worded nothing like the canonical definition.
+- If you find yourself deciding between 3 and 5, the answer is a 4 — use it; do not round away from the middle.
+- Reserve 6 for answers with a genuine (if tiny) cosmetic gap; do not use 6 as a ceiling for great answers.
+Do not use probabilities or decimal scores.'''
+
+SENTENCE_JUDGE_SYSTEM_PROMPT = '''You are a strict but fair usage judge for an English vocabulary trainer.
+The learner was shown a word or phrase and asked to write ONE original sentence using it. Decide whether the sentence proves the learner understands the target word's meaning and can use it correctly.
+Judge these aspects, in order of importance:
+1. Meaning: the target word must be used in its actual sense. A sentence that would only make sense if the word meant something else is wrong.
+2. Demonstration: the context should show the meaning. "It was ubiquitous." proves nothing; "Smartphones are so ubiquitous that even remote villages have them." demonstrates understanding.
+3. Grammar of the target word: correct part of speech, correct form (any inflection of the word counts as using it), and its typical patterns and collocations (e.g. "interested IN", "make a decision").
+4. General grammar and naturalness matter only where they obscure or distort the meaning. Ignore typos, capitalization, and punctuation slips that leave the meaning intact.
+Never penalize: simple vocabulary elsewhere in the sentence, short sentences that still demonstrate the meaning, regional spelling, or a missing final period. Never reward length or fancy words by themselves.
+If the sentence does not contain the target word or an inflected form of it, the score is 1.
+Return exactly one JSON object and no Markdown:
+{
+  "score": 1,
+  "verdict": "wrong|mostly_wrong|partial|half_right|mostly_correct|correct|perfect",
+  "feedback": "one or two direct sentences for the learner; when the usage is flawed, include a corrected version of their sentence",
+  "matched_concepts": ["string"],
+  "missing_or_wrong_concepts": ["string"]
+}
+Score scale — you MUST use the entire scale; 4 and 7 are ordinary grades, not reserved extremes:
+1 = the target word is absent, or used with a completely wrong meaning
+2 = mostly wrong: the usage clearly points at a different meaning, with only a faint connection to the real sense
+3 = partially right: the sense is related but noticeably off, or the sentence is too broken to demonstrate it
+4 = half right: the meaning could fit, but the sentence is so generic it does not demonstrate understanding, or one significant usage error remains (wrong part of speech, broken collocation)
+5 = mostly correct: the right meaning with slightly unnatural phrasing or a small grammatical slip around the target word
+6 = correct: the word is used accurately and naturally; at most cosmetic imperfections elsewhere in the sentence
+7 = flawless: accurate, natural, and the context clearly demonstrates the meaning — a sentence a careful native speaker could write. Award 7 whenever these hold; it does not require rare words or complex structure.
 Do not use probabilities or decimal scores.'''
 
 
@@ -128,9 +160,15 @@ def resolve_image_url(*, user, profile: UserProfile, card: Flashcard, page_url: 
         _public_error(exc)
 
 
+def sentence_judge_model_for(profile: UserProfile) -> str:
+    return profile.sentence_judge_model or profile.judge_model
+
+
 def _token(profile: UserProfile, operation: str) -> str | None:
     if operation == LlmUsage.Operation.JUDGING:
         model = profile.judge_model
+    elif operation == LlmUsage.Operation.SENTENCE_JUDGING:
+        model = sentence_judge_model_for(profile)
     elif operation == LlmUsage.Operation.IMAGE:
         model = image_model_for(profile)
     else:
@@ -323,16 +361,20 @@ def generate_flashcard(*, user, profile: UserProfile, pool: Pool, term: str) -> 
         _public_error(exc)
 
 
-def judge_definition(*, user, profile: UserProfile, card: Flashcard, answer: str) -> dict[str, Any]:
-    model = profile.judge_model
-    token = _token(profile, LlmUsage.Operation.JUDGING)
-    payload = {
-        'term': card.term, 'canonical_definition': card.definition,
-        'short_definition': card.short_definition, 'part_of_speech': card.part_of_speech,
-        'examples': card.examples[:3], 'learner_answer': answer,
-    }
+_VALID_VERDICTS = {
+    'wrong', 'mostly_wrong', 'partial', 'half_right', 'mostly_correct', 'correct', 'perfect',
+    # Legacy verdict names, still accepted from models with cached behavior.
+    'uncertain', 'exact',
+}
+_FALLBACK_VERDICTS = {1: 'wrong', 2: 'mostly_wrong', 3: 'partial', 4: 'half_right', 5: 'mostly_correct', 6: 'correct', 7: 'perfect'}
+
+
+def _run_judge(*, user, profile: UserProfile, card: Flashcard, operation: str, model: str,
+               system_prompt: str, payload: dict[str, Any], acceptance_score: int, reveal_threshold: int) -> dict[str, Any]:
+    """Shared hedged judge call: request, validate the 1-7 result, log usage."""
+    token = _token(profile, operation)
     messages = [
-        {'role': 'system', 'content': JUDGE_SYSTEM_PROMPT},
+        {'role': 'system', 'content': system_prompt},
         {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)},
     ]
     try:
@@ -344,23 +386,52 @@ def judge_definition(*, user, profile: UserProfile, card: Flashcard, answer: str
         score = data.get('score')
         if not isinstance(score, int) or not 1 <= score <= 7:
             raise LlmResponseError('The judge returned a score outside the required 1–7 scale.')
-        valid = {'wrong', 'mostly_wrong', 'partial', 'uncertain', 'mostly_correct', 'correct', 'exact'}
-        verdict = str(data.get('verdict') or 'uncertain').strip().lower()
-        if verdict not in valid:
-            verdict = 'uncertain'
+        verdict = str(data.get('verdict') or '').strip().lower()
+        if verdict not in _VALID_VERDICTS:
+            verdict = _FALLBACK_VERDICTS[score]
         judged = {
             'score': score, 'verdict': verdict,
             'feedback': str(data.get('feedback') or '').strip(),
             'matched_concepts': data.get('matched_concepts') if isinstance(data.get('matched_concepts'), list) else [],
             'missing_or_wrong_concepts': data.get('missing_or_wrong_concepts') if isinstance(data.get('missing_or_wrong_concepts'), list) else [],
-            'accepted': score >= profile.judge_acceptance_score,
-            'should_reveal': score <= profile.reveal_threshold,
+            'accepted': score >= acceptance_score,
+            'should_reveal': score <= reveal_threshold,
         }
-        log_usage(user=user, pool=card.pool, card=card, operation=LlmUsage.Operation.JUDGING, model=model, result=result)
+        log_usage(user=user, pool=card.pool, card=card, operation=operation, model=model, result=result)
         return judged
     except Exception as exc:
-        log_usage(user=user, pool=card.pool, card=card, operation=LlmUsage.Operation.JUDGING, model=model, error=str(exc))
+        log_usage(user=user, pool=card.pool, card=card, operation=operation, model=model, error=str(exc))
         _public_error(exc)
+
+
+def judge_definition(*, user, profile: UserProfile, card: Flashcard, answer: str) -> dict[str, Any]:
+    return _run_judge(
+        user=user, profile=profile, card=card,
+        operation=LlmUsage.Operation.JUDGING, model=profile.judge_model,
+        system_prompt=JUDGE_SYSTEM_PROMPT,
+        payload={
+            'term': card.term, 'canonical_definition': card.definition,
+            'short_definition': card.short_definition, 'part_of_speech': card.part_of_speech,
+            'examples': card.examples[:3], 'learner_answer': answer,
+        },
+        acceptance_score=profile.judge_acceptance_score,
+        reveal_threshold=profile.reveal_threshold,
+    )
+
+
+def judge_sentence(*, user, profile: UserProfile, card: Flashcard, answer: str) -> dict[str, Any]:
+    return _run_judge(
+        user=user, profile=profile, card=card,
+        operation=LlmUsage.Operation.SENTENCE_JUDGING, model=sentence_judge_model_for(profile),
+        system_prompt=SENTENCE_JUDGE_SYSTEM_PROMPT,
+        payload={
+            'target_word': card.term, 'part_of_speech': card.part_of_speech,
+            'canonical_definition': card.definition, 'short_definition': card.short_definition,
+            'example_usages': card.examples[:3], 'learner_sentence': answer,
+        },
+        acceptance_score=profile.sentence_acceptance_score,
+        reveal_threshold=profile.sentence_reveal_threshold,
+    )
 
 
 def known_models() -> list[str]:

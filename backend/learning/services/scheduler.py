@@ -126,6 +126,10 @@ def automatic_rating(*, accepted: bool, response_ms: int, direction: str, judge_
         if direction == ReviewLog.Direction.DEFINITION_TO_TERM:
             easy_seconds = getattr(profile, 'definition_to_term_easy_seconds', 6)
             good_seconds = getattr(profile, 'definition_to_term_good_seconds', 18)
+        elif direction == ReviewLog.Direction.TERM_TO_SENTENCE:
+            # Composing an original sentence naturally takes the longest.
+            easy_seconds = getattr(profile, 'term_to_sentence_easy_seconds', 20)
+            good_seconds = getattr(profile, 'term_to_sentence_good_seconds', 60)
         else:
             easy_seconds = getattr(profile, 'term_to_definition_easy_seconds', 12)
             good_seconds = getattr(profile, 'term_to_definition_good_seconds', 35)

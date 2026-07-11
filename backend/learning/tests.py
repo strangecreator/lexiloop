@@ -1023,6 +1023,102 @@ class CardImageTests(ApiBase):
         self.assertIn('too small', response.data['detail'])
 
 
+class SentenceTaskTests(ApiBase):
+    def test_sentence_direction_routes_to_the_sentence_judge(self):
+        card = self.card()
+        judged = {'score': 6, 'verdict': 'correct', 'feedback': 'Good usage.', 'matched_concepts': [],
+                  'missing_or_wrong_concepts': [], 'accepted': True, 'should_reveal': False}
+        with patch('learning.views.judge_sentence', return_value=dict(judged)) as judge:
+            response = self.client.post(f'/api/study/{card.id}/judge/', {
+                'answer': 'The auditor was meticulous, checking every receipt twice.',
+                'direction': 'term_to_sentence', 'response_ms': 30000,
+            }, format='json')
+        self.assertEqual(response.status_code, 200)
+        judge.assert_called_once()
+        self.assertEqual(response.data['grading'], 'ordinal')
+        self.assertTrue(response.data['review_recorded'])
+        log = ReviewLog.objects.get(card=card)
+        self.assertEqual(log.direction, ReviewLog.Direction.TERM_TO_SENTENCE)
+
+    def test_mixed_direction_rotates_through_all_three_tasks(self):
+        from learning.views import _direction
+        cards = [self.card(f'word{i}') for i in range(3)]
+        directions = {_direction(self.profile, card) for card in cards}
+        self.assertEqual(directions, {
+            ReviewLog.Direction.TERM_TO_DEFINITION,
+            ReviewLog.Direction.DEFINITION_TO_TERM,
+            ReviewLog.Direction.TERM_TO_SENTENCE,
+        })
+
+    def test_sentence_prompt_is_the_term(self):
+        self.profile.study_direction = UserProfile.Direction.TERM_TO_SENTENCE
+        self.profile.save()
+        card = self.card()
+        response = self.client.get(f'/api/study/next/?pool={self.pool.id}&mode=due')
+        self.assertEqual(response.data['direction'], 'term_to_sentence')
+        self.assertEqual(response.data['prompt'], card.term)
+
+    def test_sentence_settings_fields_validate(self):
+        good = self.client.patch('/api/settings/', {
+            'sentence_judge_model': 'anthropic:claude-haiku-4-5', 'sentence_acceptance_score': 6,
+            'term_to_sentence_easy_seconds': 15, 'term_to_sentence_good_seconds': 50,
+        }, format='json')
+        self.assertEqual(good.status_code, 200)
+        self.assertEqual(good.data['sentence_judge_model'], 'anthropic:claude-haiku-4-5')
+        self.assertEqual(good.data['sentence_acceptance_score'], 6)
+        bad_model = self.client.patch('/api/settings/', {'sentence_judge_model': 'external:nope'}, format='json')
+        self.assertEqual(bad_model.status_code, 400)
+        bad_pair = self.client.patch('/api/settings/', {
+            'term_to_sentence_easy_seconds': 70, 'term_to_sentence_good_seconds': 60,
+        }, format='json')
+        self.assertEqual(bad_pair.status_code, 400)
+
+    def test_sentence_rating_uses_its_own_timing_band(self):
+        fast = automatic_rating(accepted=True, response_ms=15000, direction=ReviewLog.Direction.TERM_TO_SENTENCE,
+                                judge_score=7, profile=self.profile)
+        self.assertEqual(fast, ReviewLog.Rating.EASY)
+        medium = automatic_rating(accepted=True, response_ms=45000, direction=ReviewLog.Direction.TERM_TO_SENTENCE,
+                                  judge_score=7, profile=self.profile)
+        self.assertEqual(medium, ReviewLog.Rating.GOOD)
+        slow = automatic_rating(accepted=True, response_ms=90000, direction=ReviewLog.Direction.TERM_TO_SENTENCE,
+                                judge_score=7, profile=self.profile)
+        self.assertEqual(slow, ReviewLog.Rating.HARD)
+
+    def test_sentence_judge_llm_flow_and_usage_logging(self):
+        from learning.services.llm import judge_sentence
+        card = self.card()
+        captured = {}
+
+        async def fake_hedged(model, token, messages):
+            captured['model'] = model
+            captured['messages'] = messages
+            return {'content': json.dumps({'score': 4, 'verdict': 'half_right', 'feedback': 'Too generic.'}),
+                    'stats': {}, 'elapsed_time': 1.0}
+
+        with patch('learning.services.llm._post_hedged', side_effect=fake_hedged), \
+                patch('learning.services.llm._token', return_value='k'):
+            judged = judge_sentence(user=self.user, profile=self.profile, card=card, answer='It was meticulous.')
+        self.assertEqual(judged['score'], 4)
+        self.assertEqual(judged['verdict'], 'half_right')
+        self.assertFalse(judged['accepted'])
+        self.assertTrue(judged['should_reveal'])
+        self.assertIn('learner_sentence', captured['messages'][1]['content'])
+        self.assertIn('usage judge', captured['messages'][0]['content'])
+        self.assertTrue(LlmUsage.objects.filter(operation='sentence_judging', success=True).exists())
+
+    def test_unknown_verdicts_fall_back_by_score(self):
+        from learning.services.llm import judge_definition
+
+        async def fake_hedged(model, token, messages):
+            return {'content': json.dumps({'score': 7, 'verdict': 'awesome', 'feedback': ''}),
+                    'stats': {}, 'elapsed_time': 1.0}
+
+        with patch('learning.services.llm._post_hedged', side_effect=fake_hedged), \
+                patch('learning.services.llm._token', return_value='k'):
+            judged = judge_definition(user=self.user, profile=self.profile, card=self.card(), answer='x')
+        self.assertEqual(judged['verdict'], 'perfect')
+
+
 class AnthropicRouterTests(TestCase):
     def test_direct_anthropic_models_are_in_the_catalog(self):
         from learning.services.model_catalog import TOKEN_PROVIDERS, is_supported_model, token_provider_for

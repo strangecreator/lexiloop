@@ -25,7 +25,7 @@ from learning.services.english import InvalidEnglishTerm, normalize_bulk_terms, 
 from learning.services import images as image_service
 from learning.services.images import ImageError
 from learning.exceptions import LlmResponseError
-from learning.services.llm import craft_image_query, generate_flashcard, judge_definition, resolve_image_url
+from learning.services.llm import craft_image_query, generate_flashcard, judge_definition, judge_sentence, resolve_image_url
 from learning.services.pronunciation import PronunciationError, generate_pronunciation
 from learning.services.model_catalog import model_catalog
 from learning.services.scheduler import apply_rating, automatic_rating, priority
@@ -366,7 +366,12 @@ class BulkJobCancelView(APIView):
 def _direction(profile, card):
     if profile.study_direction != UserProfile.Direction.MIXED:
         return profile.study_direction
-    return (ReviewLog.Direction.TERM_TO_DEFINITION if (card.id + card.schedule.repetitions) % 2 else ReviewLog.Direction.DEFINITION_TO_TERM)
+    options = (
+        ReviewLog.Direction.DEFINITION_TO_TERM,
+        ReviewLog.Direction.TERM_TO_DEFINITION,
+        ReviewLog.Direction.TERM_TO_SENTENCE,
+    )
+    return options[(card.id + card.schedule.repetitions) % len(options)]
 
 
 def _upcoming_images(cards, limit=2):
@@ -380,6 +385,8 @@ def _images_enabled(profile, direction):
         return False
     if direction == ReviewLog.Direction.TERM_TO_DEFINITION:
         return profile.show_images_term_to_definition
+    if direction == ReviewLog.Direction.TERM_TO_SENTENCE:
+        return profile.show_images_term_to_sentence
     return profile.show_images_definition_to_term
 
 
@@ -421,7 +428,7 @@ class NextCardView(APIView):
             card = ordered[0]
             direction = _direction(profile, card)
             payload = FlashcardSerializer(card, context={'request': request}).data
-            prompt = card.term if direction == ReviewLog.Direction.TERM_TO_DEFINITION else card.short_definition
+            prompt = card.short_definition if direction == ReviewLog.Direction.DEFINITION_TO_TERM else card.term
             return Response({
                 'card': payload, 'direction': direction, 'prompt': prompt, 'mode': mode,
                 'queue_count': len(cards), 'round_total': total_count,
@@ -455,7 +462,7 @@ class NextCardView(APIView):
         card = ordered[0]
         direction = _direction(profile, card)
         payload = FlashcardSerializer(card, context={'request': request}).data
-        prompt = card.term if direction == ReviewLog.Direction.TERM_TO_DEFINITION else card.short_definition
+        prompt = card.short_definition if direction == ReviewLog.Direction.DEFINITION_TO_TERM else card.term
         return Response({
             'card': payload, 'direction': direction, 'prompt': prompt, 'mode': mode,
             'queue_count': len(cards),
@@ -592,6 +599,9 @@ class JudgeView(APIView):
                 'missing_or_wrong_concepts': [] if accepted else [card.term],
                 'accepted': accepted, 'should_reveal': not accepted,
             }
+        elif direction == ReviewLog.Direction.TERM_TO_SENTENCE:
+            judged = judge_sentence(user=request.user, profile=profile_for(request.user), card=card, answer=answer)
+            judged['grading'] = 'ordinal'
         else:
             judged = judge_definition(user=request.user, profile=profile_for(request.user), card=card, answer=answer)
             judged['grading'] = 'ordinal'
@@ -624,6 +634,7 @@ class ReviewView(APIView):
         if direction not in {
             ReviewLog.Direction.TERM_TO_DEFINITION,
             ReviewLog.Direction.DEFINITION_TO_TERM,
+            ReviewLog.Direction.TERM_TO_SENTENCE,
         }:
             return Response({'direction': ['Invalid study direction.']}, status=400)
         accepted_value = request.data.get('accepted', False)
