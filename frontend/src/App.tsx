@@ -686,7 +686,7 @@ function CardImageControls({card,notify,onUpdated}:{card:Card;notify:(m:string,k
       <button type="button" className="secondary" onClick={()=>fileRef.current?.click()} disabled={busy}><Upload size={15}/>{card.has_image?'Replace file':'Upload file'}</button>
       {card.has_image&&<button type="button" className="danger-text" onClick={()=>void remove()} disabled={busy}><Trash2 size={15}/>Remove</button>}
     </div>
-    <small className="card-image-hint">If the link is a page rather than a picture, the image-assistant model finds the right file on it.</small>
+    <small className="card-image-hint">Any page link works — even a copied Google or Yandex image-search page: the image assistant finds the best matching picture when the link isn’t a file.</small>
   </div>
 }
 

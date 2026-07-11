@@ -66,17 +66,49 @@ def image_model_for(profile: UserProfile) -> str:
 
 
 IMAGE_SYSTEM_PROMPT = '''You help a vocabulary app attach an illustrative image to a flashcard.
-You receive the flashcard term, the web page URL the user pasted, the page title, and candidate image URLs extracted from that page.
-Pick the single candidate most likely to be the page's main, full-size image relevant to the term. Avoid logos, icons, avatars, UI sprites, tracking pixels, and small thumbnails when a larger variant of the same image exists.
-If no candidate fits but the page URL itself embeds a recognizable direct image link (for example in a query parameter), return that.
+You receive the flashcard (term, part of speech, definition), the link the user pasted, a short context line, and candidate images (URL plus a title when known).
+Pick the single candidate that best illustrates the term in the given sense. When the candidates come from one web page, prefer that page's main, full-size image; when they come from an image search, prefer the most relevant, highest-quality photograph. Avoid logos, icons, avatars, UI sprites, tracking pixels, and small thumbnails when a larger variant of the same image exists.
+If no candidate fits but the pasted link itself embeds a recognizable direct image URL (for example in a query parameter), return that.
+A wrong or irrelevant picture is worse than none: when nothing genuinely fits, return null.
 Return exactly one JSON object and no Markdown: {"image_url": "https://direct-image-url" or null, "reason": "one short sentence"}'''
 
+IMAGE_QUERY_SYSTEM_PROMPT = '''You write image-search queries for an English vocabulary flashcard app.
+Given a flashcard (term, part of speech, definition) and the user's original search text, produce one concise English query (2–5 words) that will find a clear illustrative photograph of the term in that sense. Prefer concrete, photographable subjects; for an abstract term, describe a simple scene that evokes its meaning. Never include meta words like "noun", "image", or "photo".
+Return exactly one JSON object and no Markdown: {"query": "..."}'''
 
-def resolve_image_url(*, user, profile: UserProfile, card: Flashcard, page_url: str, title: str, candidates: list[str]) -> str:
+
+def craft_image_query(*, user, profile: UserProfile, card: Flashcard, search_text: str) -> str:
+    """Turn the card's sense plus the user's search text into a retrieval query."""
+    model = image_model_for(profile)
+    token = _token(profile, LlmUsage.Operation.IMAGE)
+    payload = {'term': card.term, 'part_of_speech': card.part_of_speech,
+               'short_definition': card.short_definition, 'user_search_text': search_text}
+    messages = [
+        {'role': 'system', 'content': IMAGE_QUERY_SYSTEM_PROMPT},
+        {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)},
+    ]
+    try:
+        result = asyncio.run(_deadline(_post(model, token, messages, attempts=1), settings.IMAGE_TOTAL_DEADLINE_SECONDS, 'image lookup'))
+        content = result.get('content')
+        if not isinstance(content, str):
+            raise LlmResponseError('The model response has no textual content.')
+        query = _parse_object(content).get('query')
+        if not isinstance(query, str) or not query.strip():
+            raise LlmResponseError('The model did not produce a search query.')
+        log_usage(user=user, pool=card.pool, card=card, operation=LlmUsage.Operation.IMAGE, model=model, result=result)
+        return query.strip()[:120]
+    except Exception as exc:
+        log_usage(user=user, pool=card.pool, card=card, operation=LlmUsage.Operation.IMAGE, model=model, error=str(exc))
+        _public_error(exc)
+
+
+def resolve_image_url(*, user, profile: UserProfile, card: Flashcard, page_url: str, title: str, candidates: list) -> str:
     """Ask the image-assistant model which candidate URL is the picture to use."""
     model = image_model_for(profile)
     token = _token(profile, LlmUsage.Operation.IMAGE)
-    payload = {'term': card.term, 'page_url': page_url, 'page_title': title, 'candidate_image_urls': candidates}
+    normalized = [candidate if isinstance(candidate, dict) else {'url': candidate} for candidate in candidates]
+    payload = {'term': card.term, 'part_of_speech': card.part_of_speech, 'short_definition': card.short_definition,
+               'pasted_link': page_url, 'context': title, 'candidates': normalized}
     messages = [
         {'role': 'system', 'content': IMAGE_SYSTEM_PROMPT},
         {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)},

@@ -33,17 +33,74 @@ class ImageError(Exception):
 
 
 def extract_direct_url(url: str) -> str:
-    """Unwrap search-result links (Yandex, Google, Bing) to the real image URL."""
-    parsed = urlparse(url)
-    query = parse_qs(parsed.query)
-    host = parsed.netloc.lower()
-    if 'yandex.' in host and query.get('img_url'):
-        return unquote(query['img_url'][0])
-    if 'google.' in host and query.get('imgurl'):
-        return unquote(query['imgurl'][0])
-    if 'bing.' in host and query.get('mediaurl'):
-        return unquote(query['mediaurl'][0])
+    """Unwrap search-result links to the real image URL.
+
+    Yandex (yandex.*, ya.ru) carries it in img_url, Google's /imgres in imgurl,
+    Bing in mediaurl. The check is host-agnostic: whatever page embeds one of
+    these parameters, the parameter is the picture the user chose.
+    """
+    query = parse_qs(urlparse(url).query)
+    for key in ('img_url', 'imgurl', 'mediaurl'):
+        values = query.get(key)
+        # parse_qs already percent-decodes; decoding twice would corrupt
+        # URLs that legitimately contain %-sequences.
+        if values and values[0].startswith(('http://', 'https://')):
+            return values[0]
     return url
+
+
+SEARCH_HOSTS = ('google.', 'yandex.', 'ya.ru', 'bing.', 'duckduckgo.')
+
+
+def search_query_from_url(url: str) -> str:
+    """The text query of an image-search page URL, or '' when it is not one."""
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    if not any(marker in host for marker in SEARCH_HOSTS):
+        return ''
+    query = parse_qs(parsed.query)
+    for key in ('q', 'text'):
+        values = query.get(key)
+        if values and values[0].strip():
+            return values[0].strip()
+    return ''
+
+
+def search_image_candidates(query: str) -> list[dict]:
+    """Candidate images for a search query from keyless public APIs.
+
+    Google/Yandex image pages render only through JavaScript, so the selected
+    picture cannot be scraped from them. Instead the same query is run against
+    Openverse and Wikimedia Commons and the image assistant picks the best fit.
+    """
+    candidates: list[dict] = []
+    headers = {'User-Agent': 'LexiLoop/1.0 (vocabulary flashcards)'}
+    try:
+        response = requests.get('https://api.openverse.org/v1/images/',
+                                params={'q': query, 'page_size': 12}, headers=headers, timeout=REQUEST_TIMEOUT)
+        for item in (response.json().get('results') or []):
+            if item.get('url'):
+                candidates.append({'url': item['url'], 'title': str(item.get('title') or '')[:120]})
+    except (requests.RequestException, ValueError):
+        pass
+    try:
+        response = requests.get('https://commons.wikimedia.org/w/api.php', params={
+            'action': 'query', 'generator': 'search', 'gsrsearch': f'filetype:bitmap {query}',
+            'gsrnamespace': 6, 'gsrlimit': 8, 'prop': 'imageinfo', 'iiprop': 'url',
+            'iiurlwidth': 1280, 'format': 'json',
+        }, headers=headers, timeout=REQUEST_TIMEOUT)
+        pages = (response.json().get('query') or {}).get('pages', {})
+        for page in pages.values():
+            info = (page.get('imageinfo') or [{}])[0]
+            image_url = info.get('thumburl') or info.get('url')
+            if image_url:
+                title = str(page.get('title') or '').removeprefix('File:')[:120]
+                candidates.append({'url': image_url, 'title': title})
+    except (requests.RequestException, ValueError):
+        pass
+    if not candidates:
+        raise ImageError(f'No images could be found for “{query}”.')
+    return candidates[:30]
 
 
 def _check_host(url: str) -> None:

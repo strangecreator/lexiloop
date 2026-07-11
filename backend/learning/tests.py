@@ -982,6 +982,29 @@ class CardImageTests(ApiBase):
         self.assertEqual(resolver.call_args.kwargs['page_url'], 'https://example.com/page')
         self.assertEqual(resolver.call_args.kwargs['candidates'], [chosen, 'https://x/logo.svg'])
 
+    def test_google_search_link_falls_back_to_open_image_apis(self):
+        from learning.services.images import ImageError
+        card = self.card()
+        chosen = 'https://live.staticflickr.com/1/real.jpg'
+        search_url = 'https://www.google.com/search?sca_esv=x&udm=2&q=tin+can&biw=1728#sv=CAMSURoy'
+
+        def fake_download(url):
+            if url == chosen:
+                return _png_bytes()
+            raise ImageError('The link points to a web page, not an image file.')
+
+        with patch('learning.services.images.download_image', side_effect=fake_download), \
+                patch('learning.views.craft_image_query', return_value='aluminium tin can') as crafter, \
+                patch('learning.services.images.search_image_candidates', return_value=[{'url': chosen, 'title': 'Tin can'}]) as searcher, \
+                patch('learning.views.resolve_image_url', return_value=chosen) as resolver:
+            response = self.client.post(f'/api/flashcards/{card.id}/image/', {'url': search_url}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['image_source'], 'ai')
+        self.assertEqual(crafter.call_args.kwargs['search_text'], 'tin can')
+        searcher.assert_called_once_with('aluminium tin can')
+        self.assertEqual(resolver.call_args.kwargs['title'], 'Image search for “aluminium tin can”')
+        self.assertEqual(resolver.call_args.kwargs['candidates'], [{'url': chosen, 'title': 'Tin can'}])
+
     def test_unusable_link_returns_a_clear_error(self):
         from learning.services.images import ImageError
         card = self.card()
@@ -1007,12 +1030,20 @@ class ImageUrlExtractionTests(TestCase):
         from urllib.parse import quote
         cases = [
             f'https://yandex.ru/images/search?pos=3&img_url={quote(direct, safe="")}&rpt=simage',
+            f'https://ya.ru/images/search?from=tabbar&img_url={quote(direct, safe="")}&lr=214&pos=8&rpt=simage&text=can',
             f'https://www.google.com/imgres?imgurl={quote(direct, safe="")}&imgrefurl=https%3A%2F%2Fhost.com',
             f'https://www.bing.com/images/search?view=detailV2&mediaurl={quote(direct, safe="")}',
         ]
         for wrapped in cases:
             self.assertEqual(extract_direct_url(wrapped), direct)
         self.assertEqual(extract_direct_url(direct), direct)
+
+    def test_search_page_urls_expose_their_query(self):
+        from learning.services.images import search_query_from_url
+        google = 'https://www.google.com/search?sca_esv=x&udm=2&q=can+noun&biw=1728'
+        self.assertEqual(search_query_from_url(google), 'can noun')
+        self.assertEqual(search_query_from_url('https://ya.ru/images/search?text=tin%20can&lr=214'), 'tin can')
+        self.assertEqual(search_query_from_url('https://example.com/search?q=can'), '')
 
     def test_private_hosts_are_rejected(self):
         from learning.services.images import ImageError, _check_host

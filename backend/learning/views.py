@@ -24,7 +24,8 @@ from learning.serializers import BulkGenerationJobSerializer, FlashcardSerialize
 from learning.services.english import InvalidEnglishTerm, normalize_bulk_terms, validate_english_term
 from learning.services import images as image_service
 from learning.services.images import ImageError
-from learning.services.llm import generate_flashcard, judge_definition, resolve_image_url
+from learning.exceptions import LlmResponseError
+from learning.services.llm import craft_image_query, generate_flashcard, judge_definition, resolve_image_url
 from learning.services.pronunciation import PronunciationError, generate_pronunciation
 from learning.services.model_catalog import model_catalog
 from learning.services.scheduler import apply_rating, automatic_rating, priority
@@ -219,10 +220,25 @@ class FlashcardViewSet(viewsets.ModelViewSet):
         try:
             return image_service.download_image(url), 'link'
         except ImageError as direct_error:
-            # The link is a page, not a picture. Read the page and let the
-            # image-assistant model choose among the images found on it.
+            # The link is a page, not a picture. Image-search pages (Google,
+            # Yandex, …) render only through JavaScript, so for them the same
+            # query is run against open image APIs; any other page is read for
+            # its own image candidates. The image-assistant model picks.
+            search_query = image_service.search_query_from_url(url)
             try:
-                title, candidates = image_service.page_image_candidates(url)
+                if search_query:
+                    # The raw search text often carries meta words ("can noun")
+                    # that ruin retrieval; the model rewrites it using the
+                    # card's sense before the open image APIs are queried.
+                    profile = profile_for(request.user)
+                    try:
+                        query = craft_image_query(user=request.user, profile=profile, card=card, search_text=search_query)
+                    except LlmResponseError:
+                        query = search_query
+                    title = f'Image search for “{query}”'
+                    candidates = image_service.search_image_candidates(query)
+                else:
+                    title, candidates = image_service.page_image_candidates(url)
             except ImageError:
                 raise direct_error
             if not candidates:

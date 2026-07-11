@@ -31,6 +31,7 @@ A card can carry an optional picture, managed from the expanded library card or 
 - **Upload** any image file (up to 12 MB; re-encoded to JPEG, metadata stripped).
 - **Paste a link.** Direct image URLs download as is; Yandex/Google/Bing image-search result links are unwrapped to the real file automatically.
 - **AI-assisted lookup.** When the pasted link is a web page rather than a picture, the backend reads the page's meta and `<img>` candidates and asks the *image assistant* model to point at the right file. The model is chosen in Settings → Card images (defaults to the generation model, sharing its provider key); its calls appear in AI usage as "Image lookup".
+- **Copied search links.** A Yandex selected-image link (`ya.ru`/`yandex.*` with `img_url=`) resolves to the exact chosen picture. A copied Google Images link identifies the selection only by an internal id inside a JavaScript-rendered page, so the exact image cannot be recovered; instead the assistant rewrites the search text using the card's sense (dropping meta words like "noun"), retrieves candidates from the keyless Openverse and Wikimedia Commons APIs, and picks the best illustration — or refuses when nothing fits.
 
 Server-side downloads are SSRF-guarded (no private addresses), size-capped, and validated as real images.
 
