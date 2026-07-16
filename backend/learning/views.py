@@ -370,11 +370,27 @@ CANONICAL_DIRECTIONS = (
 )
 
 
-def _direction(profile, card):
-    enabled = [d for d in CANONICAL_DIRECTIONS if d in (profile.study_directions or [])]
+def _direction(profile, card, override=None):
+    source = override if override else (profile.study_directions or [])
+    enabled = [d for d in CANONICAL_DIRECTIONS if d in source]
     if not enabled:
         enabled = [ReviewLog.Direction.TERM_TO_DEFINITION]
     return enabled[(card.id + card.schedule.repetitions) % len(enabled)]
+
+
+def _parse_directions(request):
+    """Optional per-device task types for this study session (?directions=).
+
+    Mobile clients keep their own set because typing a full definition on a
+    phone is harder than on a keyboard. Unknown names are dropped; an absent
+    or fully invalid value falls back to the profile setting. Reviews are
+    recorded identically either way, so progress stays in sync.
+    """
+    raw = request.query_params.get('directions')
+    if raw is None:
+        return None
+    requested = {part.strip() for part in raw.split(',')}
+    return [d for d in CANONICAL_DIRECTIONS if d in requested] or None
 
 
 def _upcoming_images(cards, limit=2):
@@ -409,6 +425,7 @@ class NextCardView(APIView):
         profile = profile_for(request.user)
         pool_id = request.query_params.get('pool')
         mode = request.query_params.get('mode', 'due')
+        directions_override = _parse_directions(request)
         if mode not in {'due', 'practice'}:
             return Response({'mode': ['Use due or practice.']}, status=400)
         pools = Pool.objects.filter(user=request.user, archived=False)
@@ -440,7 +457,7 @@ class NextCardView(APIView):
                 })
             ordered = sorted(cards, key=lambda c: (c.schedule.last_reviewed_at or c.created_at, c.id))
             card = ordered[0]
-            direction = _direction(profile, card)
+            direction = _direction(profile, card, directions_override)
             payload = FlashcardSerializer(card, context={'request': request}).data
             prompt = card.short_definition if direction == ReviewLog.Direction.DEFINITION_TO_TERM else card.term
             return Response({
@@ -474,7 +491,7 @@ class NextCardView(APIView):
         rank = {CardSchedule.State.RELEARNING: 4, CardSchedule.State.LEARNING: 3, CardSchedule.State.REVIEW: 2, CardSchedule.State.NEW: 1}
         ordered = sorted(cards, key=lambda c: (rank.get(c.schedule.state, 0), priority(c.schedule, now)), reverse=True)
         card = ordered[0]
-        direction = _direction(profile, card)
+        direction = _direction(profile, card, directions_override)
         payload = FlashcardSerializer(card, context={'request': request}).data
         prompt = card.short_definition if direction == ReviewLog.Direction.DEFINITION_TO_TERM else card.term
         return Response({

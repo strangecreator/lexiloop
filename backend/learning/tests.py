@@ -1106,6 +1106,19 @@ class SentenceTaskTests(ApiBase):
         unknown = self.client.patch('/api/settings/', {'study_directions': ['mixed']}, format='json')
         self.assertEqual(unknown.status_code, 400)
 
+    def test_directions_query_param_overrides_the_profile(self):
+        self.profile.study_directions = ['term_to_definition']
+        self.profile.save()
+        card = self.card()
+        response = self.client.get(f'/api/study/next/?pool={self.pool.id}&mode=due&directions=term_to_sentence')
+        self.assertEqual(response.data['direction'], 'term_to_sentence')
+        self.assertEqual(response.data['prompt'], card.term)
+        # Unknown names are dropped; a fully invalid value falls back to the profile.
+        junk = self.client.get(f'/api/study/next/?pool={self.pool.id}&mode=due&directions=mixed,nonsense')
+        self.assertEqual(junk.data['direction'], 'term_to_definition')
+        practice = self.client.get(f'/api/study/next/?pool={self.pool.id}&mode=practice&directions=term_to_sentence')
+        self.assertEqual(practice.data['direction'], 'term_to_sentence')
+
     def test_sentence_prompt_is_the_term(self):
         self.profile.study_directions = ['term_to_sentence']
         self.profile.save()

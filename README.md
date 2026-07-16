@@ -2,7 +2,7 @@
 
 LexiLoop is a Django + React platform for building and retaining English vocabulary. It combines one-field AI card creation, semantic answer judging, durable high-volume generation, server-side pagination, PostgreSQL storage, HTTPS deployment, and an Anki-inspired review scheduler with a polished responsive interface.
 
-Version **1.22.0** lets clients send per-device study preferences: an `(easy_seconds, good_seconds)` timing band with each review and a `?prefetch=` override on the study queue. Added for the Android app, which stores these on the device.
+Version **1.23.0** adds a per-device task-type override: `?directions=` on the study queue. Together with v1.22.0's per-review timing bands and `?prefetch=`, clients can now keep their own study preferences while progress stays account-wide.
 
 ## Highlights
 
@@ -21,6 +21,12 @@ Version **1.22.0** lets clients send per-device study preferences: an `(easy_sec
 - Dynamic page titles, cached pronunciation audio, custom favicon, and responsive UI.
 - Dedicated routes: `/overview`, `/study`, `/library`, `/analytics`, `/settings`, `/auth`, `/register`, and `/admin/`.
 - Unknown URLs return a custom LexiLoop 404 page instead of the SPA shell.
+
+## v1.23.0 changes
+
+### Per-device task types
+
+`GET /api/study/next/` accepts `?directions=` (comma-separated `term_to_definition`, `definition_to_term`, `term_to_sentence`). When present, the served task rotates through that set instead of the profile's `study_directions`; unknown names are dropped and a fully invalid value falls back to the profile. Reviews are recorded identically either way, so scheduling and progress stay in sync across devices. Added for the Android app, where typing a full definition is harder than on a keyboard.
 
 ## v1.22.0 changes
 
