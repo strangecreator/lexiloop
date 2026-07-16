@@ -870,3 +870,11 @@ html:has(.sidebar.open),body:has(.sidebar.open){overflow:hidden}
 .image-loaded .anim-mist .prompt-visual-frame{animation-duration:var(--dur-mist,2.5s)}
 .image-loaded .anim-ripple .prompt-visual-frame{animation-duration:var(--dur-ripple,2.5s)}
 .image-loaded .anim-drift .prompt-visual-frame{animation-duration:var(--dur-drift,2.5s)}
+
+/* v1.24 task-type texture: quiet diagonal "tape" bands on the card topline so
+   a sentence task never reads as a definition task at a glance. Texture, not
+   color — wide soft bands in the border tone stay calm behind the label, and
+   each task keeps its own pattern (plain / 45deg / 135deg), so future task
+   types can simply pick a new one. */
+.card-topline.task-term_to_sentence{background:repeating-linear-gradient(45deg,transparent 0 9px,color-mix(in srgb,var(--border) 42%,transparent) 9px 18px)}
+.card-topline.task-definition_to_term{background:repeating-linear-gradient(135deg,transparent 0 9px,color-mix(in srgb,var(--border) 42%,transparent) 9px 18px)}

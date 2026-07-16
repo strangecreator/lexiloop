@@ -2,7 +2,7 @@
 
 LexiLoop is a Django + React platform for building and retaining English vocabulary. It combines one-field AI card creation, semantic answer judging, durable high-volume generation, server-side pagination, PostgreSQL storage, HTTPS deployment, and an Anki-inspired review scheduler with a polished responsive interface.
 
-Version **1.23.0** adds a per-device task-type override: `?directions=` on the study queue. Together with v1.22.0's per-review timing bands and `?prefetch=`, clients can now keep their own study preferences while progress stays account-wide.
+Version **1.24.0** fixes bulk generation on PostgreSQL (every item failed with "No valid response was returned for this item") and gives each study task type a quiet diagonal-tape texture on the card topline so tasks are distinguishable at a glance.
 
 ## Highlights
 
@@ -21,6 +21,16 @@ Version **1.23.0** adds a per-device task-type override: `?directions=` on the s
 - Dynamic page titles, cached pronunciation audio, custom favicon, and responsive UI.
 - Dedicated routes: `/overview`, `/study`, `/library`, `/analytics`, `/settings`, `/auth`, `/register`, and `/admin/`.
 - Unknown URLs return a custom LexiLoop 404 page instead of the SPA shell.
+
+## v1.24.0 changes
+
+### Bulk generation fixed on PostgreSQL
+
+Since `BulkGenerationJob.pool` became nullable, the bulk worker's `select_for_update().select_related('job__pool', …)` produced a LEFT OUTER JOIN that PostgreSQL refuses to lock ("FOR UPDATE cannot be applied to the nullable side of an outer join"). The exception escaped the item's error handling, was swallowed by the results reader, and every item decayed into the generic "No valid response was returned for this item" — even though the model responses on disk were valid. SQLite ignores row locks, which is why the test suite never caught it. The worker now locks only the item row and fetches the job separately (the same split `views._record_review` already uses), and a persistence failure is recorded on the item instead of being silently swallowed.
+
+### Task-type texture
+
+`.card-topline` carries a per-task class: Word → sentence gets quiet 45° diagonal bands in the border tone, Definition → word the mirrored 135° variant, and Word → definition stays plain. Texture instead of color keeps it visible at a glance without shouting, and future task types can pick their own pattern.
 
 ## v1.23.0 changes
 

@@ -38,10 +38,14 @@ def refresh_job_counts(job_id) -> BulkGenerationJob:
 def _persist_result(*, job_id, item_id: int, result: dict[str, Any], round_number: int) -> None:
     close_old_connections()
     with transaction.atomic():
-        item = BulkGenerationItem.objects.select_for_update().select_related('job__pool', 'job__user').get(pk=item_id)
+        # Lock the item alone: BulkGenerationJob.pool is nullable, so joining
+        # it via select_related() makes PostgreSQL reject FOR UPDATE ("cannot
+        # be applied to the nullable side of an outer join"). SQLite ignores
+        # row locks, which is why the test suite never saw this.
+        item = BulkGenerationItem.objects.select_for_update().get(pk=item_id)
         if item.status in {BulkGenerationItem.Status.SUCCEEDED, BulkGenerationItem.Status.SKIPPED}:
             return
-        job = item.job
+        job = BulkGenerationJob.objects.select_related('pool', 'user').get(pk=item.job_id)
         if job.status == BulkGenerationJob.Status.CANCELLED:
             return
         if not job.pool_id:
@@ -105,6 +109,14 @@ def _mark_missing(*, job_id, item_ids: list[int], round_number: int, error: str)
     refresh_job_counts(job_id)
 
 
+def _fail_item(item_id: int, message: str) -> None:
+    """Record a persistence failure without losing it to a broken transaction."""
+    close_old_connections()
+    BulkGenerationItem.objects.filter(pk=item_id).exclude(
+        status__in=[BulkGenerationItem.Status.SUCCEEDED, BulkGenerationItem.Status.SKIPPED],
+    ).update(status=BulkGenerationItem.Status.FAILED, error=message[:1100], updated_at=timezone.now())
+
+
 def _drain_jsonl(path: Path, *, offset: int, job_id, item_ids: list[int], round_number: int) -> int:
     if not path.exists():
         return offset
@@ -114,16 +126,27 @@ def _drain_jsonl(path: Path, *, offset: int, job_id, item_ids: list[int], round_
             line = handle.readline()
             if not line:
                 break
+            if not line.endswith('\n'):
+                # A partially-written final line is read again after the next flush.
+                handle.seek(offset)
+                return offset
             try:
                 data = json.loads(line)
                 index = data.pop('index')
-                if isinstance(index, int) and 0 <= index < len(item_ids):
-                    _persist_result(job_id=job_id, item_id=item_ids[index], result=data, round_number=round_number)
             except Exception:
-                # A partially-written final line is read again after the next flush.
-                if not line.endswith('\n'):
-                    handle.seek(offset)
-                    return offset
+                offset = handle.tell()
+                continue
+            if isinstance(index, int) and 0 <= index < len(item_ids):
+                try:
+                    _persist_result(job_id=job_id, item_id=item_ids[index], result=data, round_number=round_number)
+                except Exception as exc:
+                    # Never swallow a persistence error silently: the generic
+                    # "no valid response" message it used to decay into hid a
+                    # real database failure for weeks.
+                    _fail_item(
+                        item_ids[index],
+                        f'Round {round_number}: {type(exc).__name__}: {str(exc)[:900]}',
+                    )
             offset = handle.tell()
     return offset
 
