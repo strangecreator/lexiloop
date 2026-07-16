@@ -2,7 +2,7 @@
 
 LexiLoop is a Django + React platform for building and retaining English vocabulary. It combines one-field AI card creation, semantic answer judging, durable high-volume generation, server-side pagination, PostgreSQL storage, HTTPS deployment, and an Anki-inspired review scheduler with a polished responsive interface.
 
-Version **1.24.0** fixes bulk generation on PostgreSQL (every item failed with "No valid response was returned for this item") and gives each study task type a quiet diagonal-tape texture on the card topline so tasks are distinguishable at a glance.
+Version **1.24.1** fixes bulk generation on PostgreSQL (every item failed with "No valid response was returned for this item") and gives the Word → sentence task a quiet diagonal-tape texture on the card topline so it is distinguishable at a glance.
 
 ## Highlights
 
@@ -30,7 +30,7 @@ Since `BulkGenerationJob.pool` became nullable, the bulk worker's `select_for_up
 
 ### Task-type texture
 
-`.card-topline` carries a per-task class: Word → sentence gets quiet 45° diagonal bands in the border tone, Definition → word the mirrored 135° variant, and Word → definition stays plain. Texture instead of color keeps it visible at a glance without shouting, and future task types can pick their own pattern.
+`.card-topline` carries a per-task class: Word → sentence gets quiet 135° diagonal bands in the border tone (v1.24.1: sentence only); the definition and recall tasks stay plain. Texture instead of color keeps it visible at a glance without shouting, and future task types can pick their own pattern.
 
 ## v1.23.0 changes
 
