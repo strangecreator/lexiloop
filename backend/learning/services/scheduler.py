@@ -101,7 +101,7 @@ def priority(schedule: CardSchedule, now=None) -> float:
     return bonus + overdue_hours + 12 * schedule.lapses - 0.01 * schedule.interval_days
 
 
-def automatic_rating(*, accepted: bool, response_ms: int, direction: str, judge_score: int | None = None, profile: UserProfile | None = None, hint_revealed_letters: int = 0, hint_total_letters: int = 0) -> int:
+def automatic_rating(*, accepted: bool, response_ms: int, direction: str, judge_score: int | None = None, profile: UserProfile | None = None, hint_revealed_letters: int = 0, hint_total_letters: int = 0, timing_override: tuple[int, int] | None = None) -> int:
     """Choose the internal Anki-style rating from correctness and recall speed.
 
     The learner never selects Again/Hard/Good/Easy manually. Incorrect or
@@ -109,6 +109,10 @@ def automatic_rating(*, accepted: bool, response_ms: int, direction: str, judge_
     direction-specific timing bands because writing a definition naturally takes
     longer than recalling a word. A barely accepted semantic answer is capped at
     ``Hard`` and a good-but-not-exact answer is capped at ``Good``.
+
+    ``timing_override`` is an ``(easy_seconds, good_seconds)`` pair a client
+    may send with the review when its own timing bands differ from the profile
+    (typing on a phone is slower than on a computer keyboard).
     """
     if not accepted:
         return ReviewLog.Rating.AGAIN
@@ -123,7 +127,9 @@ def automatic_rating(*, accepted: bool, response_ms: int, direction: str, judge_
         base = ReviewLog.Rating.GOOD
     else:
         seconds = milliseconds / 1000
-        if direction == ReviewLog.Direction.DEFINITION_TO_TERM:
+        if timing_override is not None:
+            easy_seconds, good_seconds = timing_override
+        elif direction == ReviewLog.Direction.DEFINITION_TO_TERM:
             easy_seconds = getattr(profile, 'definition_to_term_easy_seconds', 6)
             good_seconds = getattr(profile, 'definition_to_term_good_seconds', 18)
         elif direction == ReviewLog.Direction.TERM_TO_SENTENCE:

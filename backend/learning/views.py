@@ -382,6 +382,17 @@ def _upcoming_images(cards, limit=2):
     return [{'id': c.id, 'image_key': c.image.name} for c in cards if c.image][:limit]
 
 
+def _prefetch_limit(request, profile):
+    """The profile prefetch count, optionally overridden per device via ?prefetch=."""
+    raw = request.query_params.get('prefetch')
+    if raw is None:
+        return profile.image_prefetch_count
+    try:
+        return max(0, min(int(raw), 10))
+    except (TypeError, ValueError):
+        return profile.image_prefetch_count
+
+
 def _images_enabled(profile, direction):
     """The global switch plus the per-direction preference for this task."""
     if not profile.show_card_images:
@@ -439,7 +450,7 @@ class NextCardView(APIView):
                 'show_images': _images_enabled(profile, direction),
                 'image_animations': list(profile.image_animations or []),
                 'image_animation_durations': dict(profile.image_animation_durations or {}),
-                'upcoming_images': _upcoming_images(ordered[1:], limit=profile.image_prefetch_count),
+                'upcoming_images': _upcoming_images(ordered[1:], limit=_prefetch_limit(request, profile)),
             })
 
         cards = due_cards(base_cards, user=request.user, profile=profile, now=now)
@@ -473,7 +484,7 @@ class NextCardView(APIView):
             'show_images': _images_enabled(profile, direction),
             'image_animations': list(profile.image_animations or []),
             'image_animation_durations': dict(profile.image_animation_durations or {}),
-            'upcoming_images': _upcoming_images(ordered[1:], limit=profile.image_prefetch_count),
+            'upcoming_images': _upcoming_images(ordered[1:], limit=_prefetch_limit(request, profile)),
         })
 
 
@@ -513,9 +524,26 @@ def _parse_hints(data):
         return 0, 0
 
 
+def _parse_timing_override(data):
+    """Optional per-device (easy_seconds, good_seconds) sent with a review.
+
+    Mobile clients keep their own timing bands because typing speed differs
+    between a phone and a computer keyboard. Invalid values fall back to the
+    profile bands rather than erroring, like the other soft review fields.
+    """
+    try:
+        easy = int(data.get('easy_seconds'))
+        good = int(data.get('good_seconds'))
+    except (TypeError, ValueError):
+        return None
+    if not (1 <= easy <= 600 and 2 <= good <= 900):
+        return None
+    return easy, good
+
+
 def _record_review(user, card_id, *, direction, answer, accepted, judge_score=None,
                    judge_verdict='', feedback='', response_ms=0, practice=False,
-                   hint_revealed_letters=0, hint_total_letters=0):
+                   hint_revealed_letters=0, hint_total_letters=0, timing_override=None):
     """Persist one review atomically and reschedule the card. Raises DatabaseError
     on lock contention so callers decide between 409 and a soft fallback."""
     with transaction.atomic():
@@ -544,6 +572,7 @@ def _record_review(user, card_id, *, direction, answer, accepted, judge_score=No
             profile=profile,
             hint_revealed_letters=hint_revealed_letters,
             hint_total_letters=hint_total_letters,
+            timing_override=timing_override,
         )
         previous_state, previous_interval = schedule.state, schedule.interval_days
         if not practice:
@@ -623,6 +652,7 @@ class JudgeView(APIView):
                 practice=_parse_bool(request.data.get('practice')),
                 hint_revealed_letters=hint_revealed_letters,
                 hint_total_letters=hint_total_letters,
+                timing_override=_parse_timing_override(request.data),
             )
         except DatabaseError:
             review = None
@@ -662,6 +692,7 @@ class ReviewView(APIView):
                 practice=_parse_bool(request.data.get('practice')),
                 hint_revealed_letters=hint_revealed_letters,
                 hint_total_letters=hint_total_letters,
+                timing_override=_parse_timing_override(request.data),
             )
         except DatabaseError:
             return Response({

@@ -491,6 +491,43 @@ class SchedulerTests(ApiBase):
         self.assertEqual(automatic_rating(accepted=True, response_ms=10000, direction='term_to_definition', profile=self.profile), 3)
         self.assertEqual(automatic_rating(accepted=True, response_ms=20000, direction='term_to_definition', profile=self.profile), 2)
 
+    def test_timing_override_wins_over_profile_bands(self):
+        self.profile.term_to_definition_easy_seconds = 10
+        self.profile.term_to_definition_good_seconds = 20
+        args = {'accepted': True, 'direction': 'term_to_definition', 'profile': self.profile}
+        # 15s is Good by the profile but Easy for a device with a wider band.
+        self.assertEqual(automatic_rating(**args, response_ms=15000, timing_override=(20, 40)), 4)
+        self.assertEqual(automatic_rating(**args, response_ms=25000, timing_override=(20, 40)), 3)
+        self.assertEqual(automatic_rating(**args, response_ms=45000, timing_override=(20, 40)), 2)
+
+    def test_review_endpoint_applies_device_timing_band(self):
+        card = self.card()
+        # 30s is past the default 18s Good bound, but Easy for this device.
+        response = self.client.post(
+            f'/api/study/{card.id}/review/',
+            {
+                'direction': 'definition_to_term', 'answer': 'meticulous',
+                'accepted': True, 'response_ms': 30000,
+                'easy_seconds': 40, 'good_seconds': 80,
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['automatic_rating'], 4)
+        # Junk values fall back to the profile bands instead of erroring.
+        second = self.card('painstaking')
+        response = self.client.post(
+            f'/api/study/{second.id}/review/',
+            {
+                'direction': 'definition_to_term', 'answer': 'painstaking',
+                'accepted': True, 'response_ms': 30000,
+                'easy_seconds': 'abc', 'good_seconds': 5000,
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['automatic_rating'], 2)
+
     def test_review_endpoint_selects_rating_automatically(self):
         card = self.card()
         response = self.client.post(
@@ -1273,6 +1310,19 @@ class ImageSettingsAndStudyTests(ApiBase):
         response = self.client.get(f'/api/study/next/?pool={self.pool.id}&mode=due')
         self.assertEqual(len(response.data['upcoming_images']), 1)
         self.assertIn('image_animation_durations', response.data)
+
+    def test_prefetch_query_param_overrides_the_profile_count(self):
+        from learning.services import images as image_service
+        self.client.patch('/api/settings/', {'image_prefetch_count': 1}, format='json')
+        cards = [self.card(term) for term in ('first', 'second', 'third')]
+        for card in cards:
+            image_service.store_card_image(card, _png_bytes())
+        more = self.client.get(f'/api/study/next/?pool={self.pool.id}&mode=due&prefetch=2')
+        self.assertEqual(len(more.data['upcoming_images']), 2)
+        none = self.client.get(f'/api/study/next/?pool={self.pool.id}&mode=due&prefetch=0')
+        self.assertEqual(none.data['upcoming_images'], [])
+        junk = self.client.get(f'/api/study/next/?pool={self.pool.id}&mode=due&prefetch=abc')
+        self.assertEqual(len(junk.data['upcoming_images']), 1)
 
     def test_study_next_reports_upcoming_images_for_prefetch(self):
         from learning.services import images as image_service

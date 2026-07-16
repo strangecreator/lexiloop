@@ -2,7 +2,7 @@
 
 LexiLoop is a Django + React platform for building and retaining English vocabulary. It combines one-field AI card creation, semantic answer judging, durable high-volume generation, server-side pagination, PostgreSQL storage, HTTPS deployment, and an Anki-inspired review scheduler with a polished responsive interface.
 
-Version **1.21.0** replaces the single Card direction select with per-task checkboxes (the sentence task is opt-in) and removes the obsolete Auto-reveal thresholds.
+Version **1.22.0** lets clients send per-device study preferences: an `(easy_seconds, good_seconds)` timing band with each review and a `?prefetch=` override on the study queue. Added for the Android app, which stores these on the device.
 
 ## Highlights
 
@@ -21,6 +21,16 @@ Version **1.21.0** replaces the single Card direction select with per-task check
 - Dynamic page titles, cached pronunciation audio, custom favicon, and responsive UI.
 - Dedicated routes: `/overview`, `/study`, `/library`, `/analytics`, `/settings`, `/auth`, `/register`, and `/admin/`.
 - Unknown URLs return a custom LexiLoop 404 page instead of the SPA shell.
+
+## v1.22.0 changes
+
+### Per-device review timing
+
+`POST /api/study/{id}/judge/` and `POST /api/study/{id}/review/` accept optional `easy_seconds` and `good_seconds` fields. When both are present and sane (easy 1–600, good 2–900), the automatic Easy/Good/Hard rating uses them instead of the profile bands; anything else silently falls back to the profile. The web app keeps using the account bands — the fields exist for devices where typing speed differs (the Android client sends its device-local bands).
+
+### Per-device image prefetch
+
+`GET /api/study/next/` accepts `?prefetch=N` (0–10) to override `image_prefetch_count` for the `upcoming_images` list of that response. Without the parameter, the profile value applies as before.
 
 ## v1.21.0 changes
 
