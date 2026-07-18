@@ -114,6 +114,9 @@ rollback() {
   fi
   systemctl daemon-reload || true
   chown -R "$APP_USER:$APP_GROUP" "$APP_DIR" || true
+  # Same guard as the forward path: the restore rsync must not leave the app
+  # root without world traversal, or Nginx 403s all static files.
+  chmod 755 "$APP_DIR" || true
   if (( ! database_restore_failed )); then
     if (( SERVICE_WAS_ACTIVE )); then systemctl start "$SERVICE" || true; fi
     if (( BULK_WAS_ACTIVE )); then systemctl start "$BULK_SERVICE" || true; fi
@@ -170,6 +173,10 @@ rsync -a --delete \
 
 chown -R "$APP_USER:$APP_GROUP" "$APP_DIR"
 chmod 600 "$APP_DIR/.env"
+# rsync -a stamps the staging directory's mode (mktemp -d = 700) onto $APP_DIR
+# itself, which locks Nginx (www-data) out and turns every /static/ request
+# into a 403. Nginx only needs traversal; restore the normal package-dir mode.
+chmod 755 "$APP_DIR"
 
 if command -v sudo >/dev/null 2>&1; then
   sudo -u "$APP_USER" -H bash -lc "cd '$APP_DIR' && ./scripts/bootstrap-production.sh"

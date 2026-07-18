@@ -38,6 +38,10 @@ A sense-restricted card stores its canonical POS inside `normalized_term` ("bark
 
 `/api/overview/` reports `new_introduced_today`, letting the Android app apply the daily new-card limit while offline; review responses now include the schedule's `step_index` so clients can mirror learning-step progression locally.
 
+### Updater fix: static files 403 after deploy
+
+`update-production.sh`'s `rsync -a` copied the unzip staging directory's mode (`mktemp -d` = 700) onto `/opt/lexiloop` itself, so Nginx (`www-data`) lost traversal into the app root and every `/static/` request returned 403. The updater now restores mode 755 on the app root after the sync (and after a rollback restore).
+
 ## v1.24.0 changes
 
 ### Bulk generation fixed on PostgreSQL
