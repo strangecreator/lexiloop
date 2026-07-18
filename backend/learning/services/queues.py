@@ -19,19 +19,23 @@ class DueBreakdown:
         return self.non_new + min(self.new, self.remaining_new_slots)
 
 
-def remaining_new_slots(*, user, profile: UserProfile, day=None) -> int:
-    """Return how many new cards may still be introduced today.
-
-    The scheduler's new-card limit is global per user. A card counts as introduced
-    only when a review log records that its previous state was NEW.
-    """
+def introduced_new_today(*, user, day=None) -> int:
+    """How many new cards were introduced today. A card counts as introduced
+    only when a review log records that its previous state was NEW."""
     day = day or timezone.localdate()
-    introduced = ReviewLog.objects.filter(
+    return ReviewLog.objects.filter(
         user=user,
         created_at__date=day,
         previous_state=CardSchedule.State.NEW,
     ).count()
-    return max(0, int(profile.daily_new_limit) - introduced)
+
+
+def remaining_new_slots(*, user, profile: UserProfile, day=None) -> int:
+    """Return how many new cards may still be introduced today.
+
+    The scheduler's new-card limit is global per user.
+    """
+    return max(0, int(profile.daily_new_limit) - introduced_new_today(user=user, day=day))
 
 
 def due_breakdown(cards: QuerySet[Flashcard], *, user, profile: UserProfile, now=None) -> DueBreakdown:

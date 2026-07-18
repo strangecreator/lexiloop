@@ -21,7 +21,14 @@ from rest_framework.views import APIView
 
 from learning.models import BulkGenerationItem, BulkGenerationJob, CardSchedule, Flashcard, LlmUsage, Pool, ReviewLog, UserProfile
 from learning.serializers import BulkGenerationJobSerializer, FlashcardSerializer, PoolSerializer, ProfileSerializer, RegisterSerializer
-from learning.services.english import InvalidEnglishTerm, normalize_bulk_terms, validate_english_term
+from learning.services.english import (
+    InvalidEnglishTerm,
+    normalize_bulk_terms,
+    normalized_identity,
+    parse_generation_request,
+    split_bulk_term,
+    validate_english_term,
+)
 from learning.services import images as image_service
 from learning.services.images import ImageError
 from learning.exceptions import LlmResponseError
@@ -29,7 +36,7 @@ from learning.services.llm import craft_image_query, generate_flashcard, judge_d
 from learning.services.pronunciation import PronunciationError, generate_pronunciation
 from learning.services.model_catalog import model_catalog
 from learning.services.scheduler import apply_rating, automatic_rating, priority
-from learning.services.queues import due_breakdown, due_cards, remaining_new_slots
+from learning.services.queues import due_breakdown, due_cards, introduced_new_today, remaining_new_slots
 from learning.services.pools import next_pool_accent, pool_has_active_job, transfer_pool
 from learning.services.bulk import refresh_job_counts
 
@@ -259,14 +266,16 @@ class GenerateView(APIView):
         if not term:
             return Response({'term': ['This field is required.']}, status=400)
         try:
-            term = validate_english_term(term).normalized
+            parsed = parse_generation_request(term)
         except InvalidEnglishTerm as exc:
             return Response({'term': [str(exc)]}, status=400)
-        data = generate_flashcard(user=request.user, profile=profile_for(request.user), pool=pool, term=term)
+        data = generate_flashcard(user=request.user, profile=profile_for(request.user), pool=pool, parsed=parsed)
         serializer = FlashcardSerializer(data={**data, 'pool': pool.id}, context={'request': request})
         serializer.is_valid(raise_exception=True)
         try:
-            card = serializer.save()
+            # The serializer recomputes a bare normalized_term; the generated
+            # identity may carry a "(pos)" sense suffix, so it wins here.
+            card = serializer.save(normalized_term=data['normalized_term'])
         except IntegrityError:
             return Response({'detail': 'This term already exists in the selected pool.'}, status=409)
         return Response(FlashcardSerializer(card, context={'request': request}).data, status=201)
@@ -318,11 +327,17 @@ class BulkGenerateView(APIView):
             batch_size=batch_size, max_rounds=settings.BULK_MAX_ROUNDS,
             total_count=len(terms),
         )
-        existing = set(pool.cards.filter(normalized_term__in=[term.casefold() for term in terms]).values_list('normalized_term', flat=True))
+        # Items keep their POS labels ("bark (verb)"), so the duplicate check
+        # compares the same identity the generation will store.
+        identities = {}
+        for term in terms:
+            bare, pos = split_bulk_term(term)
+            identities[term] = normalized_identity(bare or term, pos)
+        existing = set(pool.cards.filter(normalized_term__in=list(identities.values())).values_list('normalized_term', flat=True))
         items = []
         skipped = 0
         for position, term in enumerate(terms):
-            status_value = BulkGenerationItem.Status.SKIPPED if term.casefold() in existing else BulkGenerationItem.Status.PENDING
+            status_value = BulkGenerationItem.Status.SKIPPED if identities[term] in existing else BulkGenerationItem.Status.PENDING
             skipped += int(status_value == BulkGenerationItem.Status.SKIPPED)
             items.append(BulkGenerationItem(job=job, position=position, term=term, status=status_value, error='The term already exists in this pool.' if status_value == BulkGenerationItem.Status.SKIPPED else ''))
         BulkGenerationItem.objects.bulk_create(items)
@@ -612,7 +627,8 @@ def _record_review(user, card_id, *, direction, answer, accepted, judge_score=No
             'schedule': {
                 'state': schedule.state, 'due_at': schedule.due_at,
                 'interval_days': schedule.interval_days,
-                'ease_factor': schedule.ease_factor, 'repetitions': schedule.repetitions,
+                'ease_factor': schedule.ease_factor, 'step_index': schedule.step_index,
+                'repetitions': schedule.repetitions,
                 'lapses': schedule.lapses,
             },
             'practice': practice,
@@ -760,6 +776,9 @@ class OverviewView(APIView):
             'total_cards': cards.count(),
             'due_now': current_due.available,
             'new_cards': schedules.filter(state=CardSchedule.State.NEW).count(),
+            # Lets offline clients apply the daily new-card limit from the
+            # last synced state: remaining = daily_new_limit - this - local.
+            'new_introduced_today': introduced_new_today(user=request.user),
             'reviews_today': reviews.filter(created_at__date=timezone.localdate()).count(),
             'retention': round(100 * reviews.filter(accepted=True).count() / max(1, reviews.count()), 1),
             'streak': _streak(reviews),

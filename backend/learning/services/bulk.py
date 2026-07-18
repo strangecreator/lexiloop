@@ -13,13 +13,23 @@ from django.utils import timezone
 
 from learning.exceptions import LlmResponseError
 from learning.models import BulkGenerationItem, BulkGenerationJob, Flashcard, LlmUsage
+from learning.services.english import GenerationRequest, InvalidEnglishTerm, parse_generation_request
 from learning.services.llm import (
-    GENERATION_SYSTEM_PROMPT,
     _parse_object,
     _token,
     _validate_generation,
+    generation_messages,
     log_usage,
 )
+
+
+def _bulk_request(term: str) -> GenerationRequest:
+    """Parse a bulk item ("bark (verb)") the same way single add does, so the
+    prompt sent in the round and the validation of its result always agree."""
+    try:
+        return parse_generation_request(term)
+    except InvalidEnglishTerm:
+        return GenerationRequest(term=term, part_of_speech='', raw=term, interpret=False)
 
 
 def refresh_job_counts(job_id) -> BulkGenerationJob:
@@ -61,7 +71,7 @@ def _persist_result(*, job_id, item_id: int, result: dict[str, Any], round_numbe
             content = result.get('content')
             if not isinstance(content, str):
                 raise LlmResponseError('The model response has no textual content.')
-            data = _validate_generation(_parse_object(content), item.term)
+            data = _validate_generation(_parse_object(content), _bulk_request(item.term))
             try:
                 card = Flashcard.objects.create(pool=job.pool, **data)
             except IntegrityError:
@@ -159,10 +169,7 @@ async def _run_round(
     item_ids = [item_id for item_id, _term in items]
     args_list = []
     for _item_id, term in items:
-        messages = [
-            {'role': 'system', 'content': GENERATION_SYSTEM_PROMPT},
-            {'role': 'user', 'content': json.dumps({'term': term}, ensure_ascii=False)},
-        ]
+        messages = generation_messages(_bulk_request(term))
         args_list.append({
             'model': model, 'token': token,
             'payload': {'messages': messages, 'temperature': 0.1},

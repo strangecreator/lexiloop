@@ -720,19 +720,204 @@ to alert (v) / alert (n / adj)
 to align (v)
 to allocate (v)"""
 
-    def test_normalization_stage_strips_metadata_and_deduplicates(self):
+    def test_normalization_keeps_pos_labels_and_deduplicates_per_sense(self):
+        # Since v1.25 a POS label selects the sense the card covers, so it is
+        # canonicalized and kept instead of stripped; the same word with
+        # different labels stays as separate items.
         response = self.client.post('/api/generate/normalize/', {'terms': self.SAMPLE}, format='json')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['errors'], [])
         self.assertEqual(response.data['normalized'], [
-            'abolish', 'abortion', 'absence', 'absurd', 'abuse', 'academy',
-            'accelerate', 'adolescent', 'advocate', 'alert', 'align', 'allocate',
+            'abolish (verb)', 'abortion (noun)', 'absence (noun)', 'absurd (adjective)',
+            'abuse (noun)', 'abuse (verb)', 'academy (noun)', 'accelerate (verb)',
+            'adolescent (noun/adjective)', 'advocate (noun)', 'advocate (verb)',
+            'alert (verb)', 'alert (noun/adjective)', 'align (verb)', 'allocate (verb)',
         ])
-        self.assertFalse(any('(' in term or term.startswith('to ') for term in response.data['normalized']))
-        self.assertGreaterEqual(
-            sum(change['status'] == 'duplicate' for change in response.data['changes']),
-            3,
+        self.assertFalse(any(term.startswith('to ') for term in response.data['normalized']))
+
+    def test_normalization_deduplicates_identical_senses_and_flags_typos(self):
+        response = self.client.post(
+            '/api/generate/normalize/',
+            {'terms': 'to abolish (v)\nabolish (verb)\nperch\nbeneficiaol (adj)'},
+            format='json',
         )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['normalized'], ['abolish (verb)', 'perch'])
+        self.assertEqual(
+            [change['status'] for change in response.data['changes']],
+            ['changed', 'duplicate', 'unchanged'],
+        )
+        self.assertEqual(len(response.data['errors']), 1)
+        self.assertIn('beneficiaol', response.data['errors'][0]['error'])
+
+
+class GenerationRequestParsingTests(TestCase):
+    def parse(self, raw):
+        from learning.services.english import parse_generation_request
+        return parse_generation_request(raw)
+
+    def test_plain_term_stays_general(self):
+        parsed = self.parse('perch')
+        self.assertFalse(parsed.interpret)
+        self.assertEqual(parsed.term, 'perch')
+        self.assertEqual(parsed.part_of_speech, '')
+        self.assertEqual(parsed.identity, 'perch')
+
+    def test_plain_collocation_stays_general(self):
+        parsed = self.parse('give up')
+        self.assertFalse(parsed.interpret)
+        self.assertEqual(parsed.term, 'give up')
+
+    def test_trailing_pos_annotation_is_deterministic(self):
+        parsed = self.parse('bark (verb)')
+        self.assertFalse(parsed.interpret)
+        self.assertEqual(parsed.term, 'bark')
+        self.assertEqual(parsed.part_of_speech, 'verb')
+        self.assertEqual(parsed.identity, 'bark (verb)')
+        multi = self.parse('alert (n / adj)')
+        self.assertEqual(multi.part_of_speech, 'noun/adjective')
+        self.assertEqual(multi.identity, 'alert (noun/adjective)')
+
+    def test_bare_pos_word_needs_the_model(self):
+        # "bark verb" (an instruction) and "phrasal verb" (a real term) are
+        # indistinguishable here, so both go to the model.
+        for raw in ('bark verb', 'phrasal verb'):
+            parsed = self.parse(raw)
+            self.assertTrue(parsed.interpret, raw)
+            self.assertEqual(parsed.raw, raw)
+
+    def test_free_form_request_needs_the_model(self):
+        parsed = self.parse('bark — the sound a dog makes')
+        self.assertTrue(parsed.interpret)
+
+    def test_typos_and_gibberish_fail_fast(self):
+        from learning.services.english import InvalidEnglishTerm
+        for raw in ('beneficiaol', 'beneficiaol (adj)', 'kakdoeowopeo', 'bark7'):
+            with self.assertRaises(InvalidEnglishTerm, msg=raw):
+                self.parse(raw)
+
+    def test_request_length_limit(self):
+        from learning.services.english import InvalidEnglishTerm
+        with self.assertRaises(InvalidEnglishTerm):
+            self.parse('bark ' + 'very ' * 250 + 'specifically')
+
+    def test_editing_a_sense_card_keeps_its_identity(self):
+        from learning.serializers import FlashcardSerializer
+        user = User.objects.create_user(username='ident', password='strong-pass-123')
+        UserProfile.objects.create(user=user)
+        pool = Pool.objects.create(user=user, name='P')
+        card = Flashcard.objects.create(
+            pool=pool, term='bark', normalized_term='bark (verb)',
+            short_definition='To make a dog sound.', definition='To make the short loud cry of a dog.',
+        )
+
+        class FakeRequest:
+            def __init__(self, u):
+                self.user = u
+
+        serializer = FlashcardSerializer(
+            card, data={'definition': 'To make the loud abrupt cry of a dog.'},
+            partial=True, context={'request': FakeRequest(user)},
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        updated = serializer.save()
+        self.assertEqual(updated.normalized_term, 'bark (verb)')
+
+
+class SenseTargetedGenerationTests(ApiBase):
+    def setUp(self):
+        super().setUp()
+        from learning.services.security import encrypt_secret
+        self.profile.provider_tokens_encrypted = {'deepseek': encrypt_secret('token')}
+        self.profile.save()
+
+    @staticmethod
+    def payload(**overrides):
+        base = {
+            'term': 'bark', 'requested_term': 'bark', 'requested_part_of_speech': '',
+            'normalized_term': 'bark', 'part_of_speech': 'verb', 'ipa': 'bɑːk',
+            'short_definition': 'To make the short loud cry of a dog.',
+            'definition': 'To make the short loud characteristic cry of a dog.',
+            'examples': [{'sentence': 'The dog barked all night.', 'note': ''}],
+            'forms': {}, 'synonyms': [], 'antonyms': [], 'collocations': [],
+            'usage_notes': '', 'aliases': [],
+        }
+        base.update(overrides)
+        return {'content': json.dumps(base), 'stats': {'total_price': 0}, 'elapsed_time': 0.1}
+
+    @patch('learning.services.llm._post', new_callable=AsyncMock)
+    def test_pos_labelled_request_creates_sense_card_next_to_general_card(self, post):
+        post.return_value = self.payload()
+        general = self.client.post('/api/generate/', {'pool': self.pool.id, 'term': 'bark'}, format='json')
+        self.assertEqual(general.status_code, 201)
+        sense = self.client.post('/api/generate/', {'pool': self.pool.id, 'term': 'bark (verb)'}, format='json')
+        self.assertEqual(sense.status_code, 201)
+        self.assertEqual(sense.data['term'], 'bark')
+        self.assertEqual(sense.data['normalized_term'], 'bark (verb)')
+        duplicate = self.client.post('/api/generate/', {'pool': self.pool.id, 'term': 'bark (v)'}, format='json')
+        self.assertEqual(duplicate.status_code, 409)
+        # The user payload sent to the model names the requested POS.
+        sent = json.loads(post.await_args_list[1].args[2][1]['content'])
+        self.assertEqual(sent, {'term': 'bark', 'part_of_speech': 'verb'})
+
+    @patch('learning.services.llm._post', new_callable=AsyncMock)
+    def test_free_form_request_is_interpreted_and_revalidated(self, post):
+        post.return_value = self.payload(requested_part_of_speech='verb')
+        response = self.client.post('/api/generate/', {'pool': self.pool.id, 'term': 'bark verb'}, format='json')
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['normalized_term'], 'bark (verb)')
+        sent = json.loads(post.await_args.args[2][1]['content'])
+        self.assertEqual(sent, {'request': 'bark verb'})
+
+    @patch('learning.services.llm._post', new_callable=AsyncMock)
+    def test_extracted_term_must_be_part_of_the_request(self, post):
+        post.return_value = self.payload(requested_term='lion')
+        response = self.client.post('/api/generate/', {'pool': self.pool.id, 'term': 'bark verb'}, format='json')
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(Flashcard.objects.count(), 0)
+
+    @patch('learning.services.llm._post', new_callable=AsyncMock)
+    def test_misspelled_free_form_target_surfaces_spellchecker_error(self, post):
+        # Punctuation forces the interpret path; the model copies the typo
+        # verbatim and the server rejects it with the standard message.
+        post.return_value = self.payload(requested_term='beneficiaol')
+        response = self.client.post(
+            '/api/generate/', {'pool': self.pool.id, 'term': 'beneficiaol — an adjective'}, format='json',
+        )
+        self.assertEqual(response.status_code, 502)
+        self.assertIn('beneficiaol', response.data['detail'])
+        self.assertEqual(Flashcard.objects.count(), 0)
+
+    @patch('learning.services.llm._post', new_callable=AsyncMock)
+    def test_plain_shaped_typo_still_fails_before_the_model(self, post):
+        response = self.client.post(
+            '/api/generate/', {'pool': self.pool.id, 'term': 'beneficiaol as an adjective'}, format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('beneficiaol', response.data['term'][0])
+        post.assert_not_awaited()
+
+    @patch('learning.services.llm._post', new_callable=AsyncMock)
+    def test_request_over_the_char_limit_is_rejected_before_the_model(self, post):
+        response = self.client.post(
+            '/api/generate/', {'pool': self.pool.id, 'term': 'bark ' + 'noisy ' * 250}, format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+        post.assert_not_awaited()
+
+
+class OverviewNewIntroductionTests(ApiBase):
+    def test_overview_reports_new_cards_introduced_today(self):
+        card = self.card()
+        response = self.client.get('/api/overview/')
+        self.assertEqual(response.data['new_introduced_today'], 0)
+        self.client.post(
+            f'/api/study/{card.id}/review/',
+            {'direction': 'definition_to_term', 'answer': 'meticulous', 'accepted': True, 'response_ms': 3000},
+            format='json',
+        )
+        response = self.client.get('/api/overview/')
+        self.assertEqual(response.data['new_introduced_today'], 1)
 
 
 class DurableBulkGenerationTests(ApiTransactionBase):

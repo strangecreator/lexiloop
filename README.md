@@ -2,7 +2,7 @@
 
 LexiLoop is a Django + React platform for building and retaining English vocabulary. It combines one-field AI card creation, semantic answer judging, durable high-volume generation, server-side pagination, PostgreSQL storage, HTTPS deployment, and an Anki-inspired review scheduler with a polished responsive interface.
 
-Version **1.24.1** fixes bulk generation on PostgreSQL (every item failed with "No valid response was returned for this item") and gives the Word → sentence task a quiet diagonal-tape texture on the card topline so it is distinguishable at a glance.
+Version **1.25.0** adds sense-targeted generation: the one-field input now accepts free-form requests like “bark (verb)”, “bark verb”, or “bark — the sound a dog makes”, producing a card restricted to that sense while a bare word still covers all prominent meanings; “bark (verb)” and “bark (noun)” coexist as separate cards that both display as “bark”. Bulk add keeps part-of-speech labels instead of stripping them. The overview also reports how many new cards were introduced today so mobile clients can honor the daily new-card limit offline.
 
 ## Highlights
 
@@ -21,6 +21,22 @@ Version **1.24.1** fixes bulk generation on PostgreSQL (every item failed with "
 - Dynamic page titles, cached pronunciation audio, custom favicon, and responsive UI.
 - Dedicated routes: `/overview`, `/study`, `/library`, `/analytics`, `/settings`, `/auth`, `/register`, and `/admin/`.
 - Unknown URLs return a custom LexiLoop 404 page instead of the SPA shell.
+
+## v1.25.0 changes
+
+### Sense-targeted generation
+
+The one-field input now takes a free-form request of up to 1000 characters, not just a bare term. Deterministic shapes are resolved without a model round-trip: a plain validated word ("perch") keeps the historical behavior (one general card covering all prominent senses), and the vocabulary-list shape ("bark (verb)", "alert (n / adj)") pins the card to that part of speech. Anything more free-form ("bark verb", "bark — the sound a dog makes", a request with the learner's own example sentence) goes to the generation model, which identifies the target term and the requested sense; the extracted term must be a verbatim fragment of the request and is re-validated by the server's spellchecker, so gibberish and typos still produce the standard suggestions instead of a hallucinated card. The prompt is hardened so a request can only influence sense, part of speech, register, and examples — never the model's role or output format.
+
+A sense-restricted card stores its canonical POS inside `normalized_term` ("bark (verb)"), so it coexists with the general card ("bark") and other senses while all of them display the same word title. Editing a sense card in the Library preserves its identity suffix.
+
+### Bulk add keeps part-of-speech labels
+
+`(v)`, `(n / adj)` and friends are canonicalized ("(verb)", "(noun/adjective)") and kept with the item instead of being stripped, and each label combination is generated as its own card; identical senses still deduplicate, and typo detection is unchanged. The pre-job duplicate check and the worker validate against the same sense identity as single add.
+
+### Overview for offline clients
+
+`/api/overview/` reports `new_introduced_today`, letting the Android app apply the daily new-card limit while offline; review responses now include the schedule's `step_index` so clients can mirror learning-step progression locally.
 
 ## v1.24.0 changes
 

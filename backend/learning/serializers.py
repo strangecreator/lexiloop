@@ -1,3 +1,5 @@
+import re
+
 from django.contrib.auth.models import User
 from rest_framework import serializers
 
@@ -72,7 +74,14 @@ class FlashcardSerializer(serializers.ModelSerializer):
         attrs['term'] = validated_term.normalized
         attrs['definition'] = definition
         attrs['short_definition'] = short or definition[:180]
-        attrs['normalized_term'] = validated_term.normalized.casefold()
+        identity = validated_term.normalized.casefold()
+        existing = getattr(self.instance, 'normalized_term', '')
+        # A sense-restricted card (normalized_term like "bark (verb)") keeps
+        # its POS identity suffix when its fields are edited in the Library.
+        match = re.fullmatch(r'.*? \((?P<pos>[a-z/]+)\)', existing or '')
+        if match:
+            identity = f"{identity} ({match.group('pos')})"
+        attrs['normalized_term'] = identity
         return attrs
 
 
