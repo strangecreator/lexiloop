@@ -14,8 +14,7 @@ def summarize_response_stats(response_json: dict, decimals: bool = True) -> dict
         cache_hit_tokens = utils.default_for_none(response_json["usage"]["prompt_tokens_details"], {}).get("cached_tokens", 0)
         cache_miss_tokens = response_json["usage"]["prompt_tokens"] - cache_hit_tokens
         out_tokens = response_json["usage"]["completion_tokens"]
-    except Exception as e:
-        print(response_json)
+    except Exception:
         raise
 
     cache_hit_price = cache_hit_tokens * PRICE_INPUT_CACHE_HIT

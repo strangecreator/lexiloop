@@ -35,6 +35,11 @@ from learning.exceptions import LlmResponseError
 from learning.services.llm import craft_image_query, generate_flashcard, judge_definition, judge_sentence, resolve_image_url
 from learning.services.pronunciation import PronunciationError, generate_pronunciation
 from learning.services.model_catalog import model_catalog
+from learning.services.provider_updates import (
+    PROVIDER_SPECS,
+    provider_update_summaries,
+    update_provider_catalog,
+)
 from learning.services.scheduler import apply_rating, automatic_rating, priority
 from learning.services.queues import due_breakdown, due_cards, introduced_new_today, remaining_new_slots
 from learning.services.pools import next_pool_accent, pool_has_active_job, transfer_pool
@@ -93,7 +98,30 @@ class SettingsView(APIView):
 
 class ModelsView(APIView):
     def get(self, request):
-        return Response({'models': model_catalog()})
+        profile = profile_for(request.user)
+        return Response({
+            'models': model_catalog(profile),
+            'providers': provider_update_summaries(profile),
+        })
+
+
+class ProviderUpdateView(APIView):
+    def post(self, request, provider):
+        if provider not in PROVIDER_SPECS:
+            return Response({'detail': 'Unknown API provider.'}, status=404)
+        profile = profile_for(request.user)
+        result = update_provider_catalog(
+            user=request.user,
+            profile=profile,
+            provider=provider,
+        )
+        activated = result.pop('profile')
+        return Response({
+            'update': result,
+            'models': model_catalog(activated),
+            'providers': provider_update_summaries(activated),
+            'settings': ProfileSerializer(activated).data,
+        })
 
 
 class PoolViewSet(viewsets.ModelViewSet):
@@ -854,4 +882,3 @@ class AnalyticsView(APIView):
             },
             'failures': failures,
         })
-

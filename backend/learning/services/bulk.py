@@ -14,6 +14,7 @@ from django.utils import timezone
 from learning.exceptions import LlmResponseError
 from learning.models import BulkGenerationItem, BulkGenerationJob, Flashcard, LlmUsage
 from learning.services.english import GenerationRequest, InvalidEnglishTerm, parse_generation_request
+from learning.services.model_catalog import request_config_for
 from learning.services.llm import (
     _parse_object,
     _token,
@@ -173,6 +174,7 @@ async def _run_round(
         args_list.append({
             'model': model, 'token': token,
             'payload': {'messages': messages, 'temperature': 0.1},
+            'model_config': request_config_for(model),
             'attempts': settings.BULK_ITEM_ATTEMPTS,
             'backoff_seconds': settings.LLM_RETRY_BACKOFF_SECONDS,
             'errors_to_ignore_func': lambda exc: True,

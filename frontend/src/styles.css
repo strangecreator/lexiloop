@@ -595,7 +595,8 @@ textarea{resize:none!important;overflow-y:hidden;max-height:420px;scrollbar-gutt
 .provider-key-dot.removing{background:var(--red)}
 .provider-key-row .status.neutral{color:var(--muted);background:var(--surface3)}
 .provider-key-row .danger-text,.provider-key-row .ghost{font-size:11px;padding:6px 10px;flex:none}
-@media(max-width:560px){.provider-key-list{padding-inline:17px}.provider-key-row{flex-wrap:wrap;row-gap:6px}.provider-key-row>div{flex:1 1 60%}}
+.provider-key-actions{display:flex!important;flex:0 0 auto!important;flex-direction:row!important;align-items:center;gap:6px!important}.provider-update-button{font-size:11px;padding:7px 10px;height:auto;white-space:nowrap}.provider-update-note{margin:0;padding:0 23px 18px;color:var(--muted2);font-size:10px;line-height:1.55}
+@media(max-width:560px){.provider-key-list{padding-inline:17px}.provider-key-row{flex-wrap:wrap;row-gap:6px}.provider-key-row>div:not(.provider-key-actions){flex:1 1 60%}.provider-key-actions{flex:1 0 100%!important;justify-content:flex-end}.provider-update-note{padding-inline:17px}}
 
 @media(max-width:430px){
   .page{padding-inline:11px;padding-bottom:38px}

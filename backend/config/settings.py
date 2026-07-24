@@ -97,6 +97,12 @@ JUDGE_REQUEST_TIMEOUT_SECONDS = int(os.getenv('JUDGE_REQUEST_TIMEOUT_SECONDS', '
 JUDGE_TOTAL_DEADLINE_SECONDS = int(os.getenv('JUDGE_TOTAL_DEADLINE_SECONDS', '40'))
 GENERATION_TOTAL_DEADLINE_SECONDS = int(os.getenv('GENERATION_TOTAL_DEADLINE_SECONDS', '170'))
 IMAGE_TOTAL_DEADLINE_SECONDS = int(os.getenv('IMAGE_TOTAL_DEADLINE_SECONDS', '40'))
+# Provider catalog refreshes first read the provider's authenticated /models
+# endpoint, then use a working saved LLM for two short schema-only review passes,
+# and finally canary the proposed text models.
+PROVIDER_DISCOVERY_TIMEOUT_SECONDS = int(os.getenv('PROVIDER_DISCOVERY_TIMEOUT_SECONDS', '20'))
+PROVIDER_UPDATE_LLM_TIMEOUT_SECONDS = int(os.getenv('PROVIDER_UPDATE_LLM_TIMEOUT_SECONDS', '25'))
+PROVIDER_CANARY_TIMEOUT_SECONDS = int(os.getenv('PROVIDER_CANARY_TIMEOUT_SECONDS', '25'))
 BULK_ITEM_ATTEMPTS = int(os.getenv('BULK_ITEM_ATTEMPTS', '3'))
 BULK_MAX_ROUNDS = int(os.getenv('BULK_MAX_ROUNDS', '5'))
 BULK_TARGET_SUCCESS_RATIO = float(os.getenv('BULK_TARGET_SUCCESS_RATIO', '0.99'))

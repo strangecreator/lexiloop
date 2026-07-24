@@ -2,7 +2,7 @@
 
 LexiLoop is a Django + React platform for building and retaining English vocabulary. It combines one-field AI card creation, semantic answer judging, durable high-volume generation, server-side pagination, PostgreSQL storage, HTTPS deployment, and an Anki-inspired review scheduler with a polished responsive interface.
 
-Version **1.25.0** adds sense-targeted generation: the one-field input now accepts free-form requests like “bark (verb)”, “bark verb”, or “bark — the sound a dog makes”, producing a card restricted to that sense while a bare word still covers all prominent meanings; “bark (verb)” and “bark (noun)” coexist as separate cards that both display as “bark”. Bulk add keeps part-of-speech labels instead of stripping them. The overview also reports how many new cards were introduced today so mobile clients can honor the daily new-card limit offline.
+Version **1.26.0** makes provider APIs self-refreshing at the model layer. Settings → Saved API keys now has a per-provider **Check API** action: LexiLoop reads the provider’s authenticated live model list, asks a working saved model to analyze and review it in two passes, validates the response against a strict schema, canary-tests every candidate, and atomically activates only verified text models for that account. DeepSeek’s retired aliases are migrated to V4 Flash/Pro immediately.
 
 ## Highlights
 
@@ -21,6 +21,23 @@ Version **1.25.0** adds sense-targeted generation: the one-field input now accep
 - Dynamic page titles, cached pronunciation audio, custom favicon, and responsive UI.
 - Dedicated routes: `/overview`, `/study`, `/library`, `/analytics`, `/settings`, `/auth`, `/register`, and `/admin/`.
 - Unknown URLs return a custom LexiLoop 404 page instead of the SPA shell.
+
+## v1.26.0 changes
+
+### Resilient provider catalogs
+
+- `POST /api/providers/{provider}/update/` performs authenticated live discovery for DeepSeek, OpenAI, Anthropic, OpenRouter, and Xiaomi.
+- A two-pass LLM analyst/reviewer sees only the provider name, the live model IDs, and the current public catalog. It can propose labels, descriptions, and generation/judge suitability; it cannot provide code, URLs, headers, credentials, or arbitrary request bodies.
+- Model IDs must be an exact member of the just-fetched `/models` response. Non-chat families and malformed IDs are removed deterministically, the output is capped, and each candidate must complete a low-token canary request before activation.
+- Updates are per account and committed under a database lock, so one user cannot modify another user’s router. Existing generation, judge, sentence, and image selections migrate to a verified replacement only when their old target disappeared.
+- Network destinations, authentication styles, and protocol adapters remain a reviewed allowlist in application code. Model-level changes are self-service; a provider-wide authentication or wire-protocol change still requires a platform release.
+
+### DeepSeek V4 rollover
+
+- The direct catalog now exposes `deepseek-v4-flash` and `deepseek-v4-pro`.
+- New accounts default to V4 Flash; migration `learning.0014_provider_catalog_overrides_and_deepseek_v4` updates all four saved model roles.
+- Legacy `external:deepseek-chat` and `external:deepseek-reasoner` router IDs temporarily route to V4 Flash and V4 Pro respectively, making rolling deployment safe.
+- Direct DeepSeek and Xiaomi adapters accept future `provider:model-id` entries without another registry edit, and usage-schema changes no longer turn an otherwise successful completion into a failure.
 
 ## v1.25.0 changes
 

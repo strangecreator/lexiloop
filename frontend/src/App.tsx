@@ -9,7 +9,7 @@ import {
   Image as ImageIcon, ImagePlus, Upload, PencilLine
 } from 'lucide-react'
 import { api, apiBlob, apiPage, ApiError, list, setToken, token } from './api'
-import type { AccentColor, Analytics, BulkJob, Card, Direction, JudgeResult, ModelOption, Overview, Pool, Settings, Theme } from './types'
+import type { AccentColor, Analytics, BulkJob, Card, Direction, JudgeResult, ModelCatalogResponse, ModelOption, Overview, Pool, ProviderUpdateInfo, ProviderUpdateResponse, Settings, Theme } from './types'
 
 type Page = 'home'|'study'|'library'|'analytics'|'settings'|'notfound'
 type Toast = {message:string; kind:'success'|'error'}
@@ -34,8 +34,8 @@ function authModeFromPath(path:string):'login'|'register'{return path.replace(/\
 const ACCENTS:AccentColor[]=['emerald','blue','teal','indigo','violet','rose','orange']
 
 const emptySettings:Settings = {
-  theme:'system', accent_color:'emerald', study_directions:['term_to_definition','definition_to_term'], generation_model:'external:deepseek-chat', has_generation_token:false,
-  judge_model:'external:deepseek-chat', has_judge_token:false, token_status:{}, judge_acceptance_score:5,
+  theme:'system', accent_color:'emerald', study_directions:['term_to_definition','definition_to_term'], generation_model:'deepseek:deepseek-v4-flash', has_generation_token:false,
+  judge_model:'deepseek:deepseek-v4-flash', has_judge_token:false, token_status:{}, judge_acceptance_score:5,
   sentence_judge_model:'', has_sentence_token:false, sentence_acceptance_score:5, show_images_term_to_sentence:true,
   image_model:'', has_image_token:false, show_card_images:true,
   show_images_term_to_definition:true, show_images_definition_to_term:true, image_animations:['mist','ripple','drift'],
@@ -861,8 +861,8 @@ function CostChart({rows}:{rows:Analytics['daily']}){
 }
 
 function SettingsPage({value,onSaved,notify}:{value:Settings;onSaved:(s:Settings)=>void;notify:(m:string,k?:Toast['kind'])=>void}){
-  const [form,setForm]=useState(value);const [providerTokens,setProviderTokens]=useState<Record<string,string>>({});const [models,setModels]=useState<ModelOption[]>([]);const [busy,setBusy]=useState(false);const [advanced,setAdvanced]=useState(false)
-  useEffect(()=>setForm(value),[value]);useEffect(()=>{api<{models:ModelOption[]}>('/models/').then(x=>setModels(x.models)).catch(()=>{})},[])
+  const [form,setForm]=useState(value);const [providerTokens,setProviderTokens]=useState<Record<string,string>>({});const [models,setModels]=useState<ModelOption[]>([]);const [providers,setProviders]=useState<ProviderUpdateInfo[]>([]);const [busy,setBusy]=useState(false);const [updatingProvider,setUpdatingProvider]=useState<string|null>(null);const [advanced,setAdvanced]=useState(false)
+  useEffect(()=>setForm(value),[value]);useEffect(()=>{api<ModelCatalogResponse>('/models/').then(x=>{setModels(x.models);setProviders(x.providers||[])}).catch(()=>{})},[])
   const patch=<K extends keyof Settings>(k:K,v:Settings[K])=>setForm(f=>({...f,[k]:v}))
   // Keys are stored once per provider, so switching between models of the same
   // provider never asks for the key again. providerTokens holds only staged
@@ -875,6 +875,23 @@ function SettingsPage({value,onSaved,notify}:{value:Settings;onSaved:(s:Settings
   const tokenSaved=(model?:ModelOption)=>Boolean(model&&form.token_status?.[model.token_provider])
   const tokenValue=(model?:ModelOption)=>model?providerTokens[model.token_provider]??'':''
   const tokenPlaceholder=(model?:ModelOption)=>tokenSaved(model)?'••••••••  Leave blank to keep':`Paste ${model?.token_label||'API key'}`
+  const updateProvider=async(provider:string)=>{
+    if(updatingProvider)return
+    setUpdatingProvider(provider)
+    try{
+      const result=await api<ProviderUpdateResponse>(`/providers/${encodeURIComponent(provider)}/update/`,{method:'POST'},170_000)
+      setModels(result.models);setProviders(result.providers||[])
+      const server=result.settings
+      const merged={...form,
+        generation_model:server.generation_model,judge_model:server.judge_model,image_model:server.image_model,
+        sentence_judge_model:server.sentence_judge_model,has_generation_token:server.has_generation_token,
+        has_judge_token:server.has_judge_token,has_image_token:server.has_image_token,
+        has_sentence_token:server.has_sentence_token,token_status:server.token_status}
+      setForm(merged);onSaved(merged)
+      const ai=result.update.ai_runs?` · ${result.update.ai_runs}-pass AI review`:' · live API validation'
+      notify(`${result.update.provider_name}: ${result.update.activated_count} model${result.update.activated_count===1?'':'s'} verified${ai}`)
+    }catch(e){notify((e as Error).message,'error')}finally{setUpdatingProvider(null)}
+  }
   return <div className="settings-wrap"><section className="panel settings-section"><div className="settings-heading"><div className="settings-icon"><WandSparkles/></div><div><h2>Flashcard generation</h2><p>Choose a public model. LexiLoop handles the router identifier internally.</p></div><span className={`status ${form.has_generation_token?'ok':''}`}>{form.has_generation_token?'Key saved':'Key required'}</span></div><div className="settings-grid"><label>Generation model<ModelInput value={form.generation_model} set={v=>patch('generation_model',v)} models={models} role="generation"/></label><label>{generationModel?.token_label||'Provider API key'}<input type="text" name="lexiloop-generation-provider-token" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} data-lpignore="true" data-1p-ignore="true" data-form-type="other" value={tokenValue(generationModel)} onChange={e=>generationModel&&stageToken(generationModel.token_provider,e.target.value)} placeholder={tokenPlaceholder(generationModel)}/><small>Encrypted at rest and never returned by the API. Saved once per provider.</small></label></div></section>
     <section className="panel settings-section"><div className="settings-heading"><div className="settings-icon"><BrainCircuit/></div><div><h2>Definition judge</h2><p>Use a fast, inexpensive model independently from generation.</p></div><span className={`status ${form.has_judge_token?'ok':''}`}>{form.has_judge_token?'Key saved':'Key required'}</span></div><div className="settings-grid"><label>Judge model<ModelInput value={form.judge_model} set={v=>patch('judge_model',v)} models={models} role="judge"/></label><label>{judgeModel?.token_label||'Provider API key'}<input type="text" name="lexiloop-judge-provider-token" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} data-lpignore="true" data-1p-ignore="true" data-form-type="other" value={tokenValue(judgeModel)} onChange={e=>judgeModel&&stageToken(judgeModel.token_provider,e.target.value)} placeholder={tokenPlaceholder(judgeModel)}/><small>Use the key belonging to the selected provider.</small></label><label>Accept score <b>{form.judge_acceptance_score}</b><input type="range" min={1} max={7} value={form.judge_acceptance_score} onChange={e=>patch('judge_acceptance_score',Number(e.target.value))}/><small>Answers at or above this score count as understood.</small></label></div></section>
     <section className="panel settings-section"><div className="settings-heading"><div className="settings-icon"><PencilLine/></div><div><h2>Sentence judge</h2><p>Grades the Word → sentence task: does the sentence use the word correctly and naturally?</p></div><span className={`status ${form.has_sentence_token?'ok':''}`}>{form.has_sentence_token?'Key saved':'Key required'}</span></div><div className="settings-grid"><label>Sentence judge model<select value={form.sentence_judge_model} onChange={e=>patch('sentence_judge_model',e.target.value)}><option value="">Same as the definition judge</option>{models.map(model=><option key={model.id} value={model.id}>{model.label} · {model.provider.split(' · ')[0]}</option>)}</select><small>Sentences are graded on a fixed 1–7 usage rubric. Uses the provider key saved above.</small></label><label>Accept score <b>{form.sentence_acceptance_score}</b><input type="range" min={1} max={7} value={form.sentence_acceptance_score} onChange={e=>patch('sentence_acceptance_score',Number(e.target.value))}/><small>Sentences at or above this score count as correct usage.</small></label></div></section>
@@ -882,29 +899,33 @@ function SettingsPage({value,onSaved,notify}:{value:Settings;onSaved:(s:Settings
     <div className="settings-field">Where images appear<div className="check-list"><label className="check-row"><input type="checkbox" checked={form.show_images_term_to_definition} onChange={e=>patch('show_images_term_to_definition',e.target.checked)}/><span>Word → definition tasks</span></label><label className="check-row"><input type="checkbox" checked={form.show_images_definition_to_term} onChange={e=>patch('show_images_definition_to_term',e.target.checked)}/><span>Definition → word tasks<small>a picture can hint at the answer — turn off for stricter recall</small></span></label><label className="check-row"><input type="checkbox" checked={form.show_images_term_to_sentence} onChange={e=>patch('show_images_term_to_sentence',e.target.checked)}/><span>Word → sentence tasks</span></label></div><small>Applies while study images are on.</small></div>
     <div className="settings-field">Reveal animations<div className="check-list">{ANIMATION_CHOICES.map(choice=><div className="check-row anim-row" key={choice.id}><label className="check-row-main"><input type="checkbox" checked={form.image_animations.includes(choice.id)} onChange={e=>patch('image_animations',e.target.checked?ANIMATION_CHOICES.map(x=>x.id).filter(id=>id===choice.id||form.image_animations.includes(id)):form.image_animations.filter(id=>id!==choice.id))}/><span>{choice.label}<small>{choice.hint}</small></span></label><label className="anim-duration" title="Animation duration in seconds"><NumberField min={0.5} max={30} step={0.1} value={form.image_animation_durations[choice.id]??ANIMATION_DEFAULT_SECONDS[choice.id]} set={v=>patch('image_animation_durations',{...form.image_animation_durations,[choice.id]:v})}/><span>s</span></label></div>)}</div><small>Each card keeps one of the checked animations. Uncheck all for a plain fade.</small></div>
     <label>Prefetch upcoming images<NumberField min={0} max={10} round value={form.image_prefetch_count} set={v=>patch('image_prefetch_count',v)}/><small>How many of the next flashcards’ images load in advance during study. 0 disables prefetching.</small></label></div></section>
-    <ProviderKeysSection models={models} status={form.token_status||{}} staged={providerTokens} onRemove={provider=>stageToken(provider,'')} onUndo={unstageToken}/>
+    <ProviderKeysSection models={models} providers={providers} status={form.token_status||{}} staged={providerTokens} updating={updatingProvider} onUpdate={provider=>void updateProvider(provider)} onRemove={provider=>stageToken(provider,'')} onUndo={unstageToken}/>
     <section className="panel settings-section"><div className="settings-heading"><div className="settings-icon"><BookOpen/></div><div><h2>Study experience</h2><p>Control prompt direction, appearance, and new-card load.</p></div></div><div className="settings-grid three"><div className="settings-field">Task types<div className="check-list">{([['term_to_definition','Word → definition'],['definition_to_term','Definition → word'],['term_to_sentence','Word → sentence']] as [Direction,string][]).map(([id,label])=><label className="check-row" key={id}><input type="checkbox" checked={form.study_directions.includes(id)} onChange={e=>{const next=e.target.checked?(['term_to_definition','definition_to_term','term_to_sentence'] as Direction[]).filter(d=>d===id||form.study_directions.includes(d)):form.study_directions.filter(d=>d!==id);if(next.length)patch('study_directions',next)}}/><span>{label}</span></label>)}</div><small>Due cards rotate through the enabled task types. At least one stays on.</small></div><label>Appearance<select value={form.theme} onChange={e=>patch('theme',e.target.value as Theme)}><option value="dark">Dark</option><option value="light">Light</option><option value="system">System</option></select></label><label>Daily new cards<NumberField min={0} max={500} round value={form.daily_new_limit} set={v=>patch('daily_new_limit',v)}/></label></div><div className="accent-setting"><div><Palette size={18}/><span><b>Interface color</b><small>Choose the accent used for actions, charts, and highlights.</small></span></div><AccentPicker value={form.accent_color} set={v=>patch('accent_color',v)}/></div></section>
     <section className="panel settings-section"><div className="settings-heading"><div className="settings-icon"><Clock3/></div><div><h2>Automatic review timing</h2><p>Correctness is primary; response time chooses Easy, Good, or Hard automatically.</p></div></div><div className="timing-settings"><TimingBand title="Word → definition" description="Writing a free-form meaning takes longer." easy={form.term_to_definition_easy_seconds} good={form.term_to_definition_good_seconds} setEasy={v=>patch('term_to_definition_easy_seconds',v)} setGood={v=>patch('term_to_definition_good_seconds',v)}/><TimingBand title="Definition → word" description="Recalling and typing one term should be faster." easy={form.definition_to_term_easy_seconds} good={form.definition_to_term_good_seconds} setEasy={v=>patch('definition_to_term_easy_seconds',v)} setGood={v=>patch('definition_to_term_good_seconds',v)}/><TimingBand title="Word → sentence" description="Composing an original sentence takes the longest." easy={form.term_to_sentence_easy_seconds} good={form.term_to_sentence_good_seconds} setEasy={v=>patch('term_to_sentence_easy_seconds',v)} setGood={v=>patch('term_to_sentence_good_seconds',v)}/></div></section>
     <section className="panel settings-section"><button className="advanced-toggle" onClick={()=>setAdvanced(!advanced)}><div><Gauge/><span><b>Scheduler tuning</b><small>Anki-inspired learning and review parameters</small></span></div>{advanced?<ChevronDown/>:<ChevronRight/>}</button>{advanced&&<div className="settings-grid advanced"><label>Learning steps (minutes)<input value={form.learning_steps_minutes.join(', ')} onChange={e=>patch('learning_steps_minutes',numbers(e.target.value))}/></label><label>Relearning steps (minutes)<input value={form.relearning_steps_minutes.join(', ')} onChange={e=>patch('relearning_steps_minutes',numbers(e.target.value))}/></label><NumberSetting label="Graduating interval (days)" value={form.graduating_interval_days} set={v=>patch('graduating_interval_days',v)}/><NumberSetting label="Easy interval (days)" value={form.easy_interval_days} set={v=>patch('easy_interval_days',v)}/><NumberSetting label="Easy bonus" value={form.easy_bonus} set={v=>patch('easy_bonus',v)}/><NumberSetting label="Hard multiplier" value={form.hard_multiplier} set={v=>patch('hard_multiplier',v)}/><NumberSetting label="Lapse multiplier" value={form.lapse_multiplier} set={v=>patch('lapse_multiplier',v)}/><NumberSetting label="Minimum ease" value={form.minimum_ease} set={v=>patch('minimum_ease',v)}/></div>}</section>
     <div className="settings-save"><span>Changes apply to future reviews.</span><button className="primary big" onClick={save} disabled={busy}><Save size={17}/>{busy?'Saving…':'Save settings'}</button></div>
   </div>
 }
-function ProviderKeysSection({models,status,staged,onRemove,onUndo}:{models:ModelOption[];status:Record<string,boolean>;staged:Record<string,string>;onRemove:(provider:string)=>void;onUndo:(provider:string)=>void}){
-  const providers=[...new Map(models.map(model=>[model.token_provider,{id:model.token_provider,name:model.provider.split(' · ')[0],token_label:model.token_label}])).values()]
-  if(!providers.length)return null
+function ProviderKeysSection({models,providers,status,staged,updating,onUpdate,onRemove,onUndo}:{models:ModelOption[];providers:ProviderUpdateInfo[];status:Record<string,boolean>;staged:Record<string,string>;updating:string|null;onUpdate:(provider:string)=>void;onRemove:(provider:string)=>void;onUndo:(provider:string)=>void}){
+  const fallback=[...new Map(models.map(model=>[model.token_provider,{id:model.token_provider,name:model.provider.split(' · ')[0],token_label:model.token_label,last_updated_at:null}])).values()]
+  const rows=providers.length?providers.map(provider=>({...provider,token_label:models.find(model=>model.token_provider===provider.id)?.token_label||`${provider.name} API key`})):fallback
+  if(!rows.length)return null
   return <section className="panel settings-section"><div className="settings-heading"><div className="settings-icon"><KeyRound/></div><div><h2>Saved API keys</h2><p>One key per provider. Every model of that provider uses it automatically.</p></div></div>
-    <div className="provider-key-list">{providers.map(provider=>{
+    <div className="provider-key-list">{rows.map(provider=>{
       const stagedValue=staged[provider.id]
       const state=stagedValue===''?'removing':stagedValue?'staging':status[provider.id]?'saved':'missing'
       const labels={removing:'Removed on save',staging:'Updated on save',saved:'Key saved',missing:'No key'} as const
+      const checking=updating===provider.id
+      const canUpdate=state==='saved'&&!updating
       return <div className="provider-key-row" key={provider.id}>
         <span className={`provider-key-dot ${state}`}/>
-        <div><b>{provider.name}</b><small>{provider.token_label}</small></div>
+        <div><b>{provider.name}</b><small>{provider.token_label}{provider.last_updated_at?` · checked ${new Date(provider.last_updated_at).toLocaleDateString()}`:''}</small></div>
         <span className={`status ${state==='saved'||state==='staging'?'ok':''} ${state==='missing'?'neutral':''}`}>{labels[state]}</span>
-        {state==='saved'&&<button type="button" className="danger-text" onClick={()=>onRemove(provider.id)}>Remove</button>}
-        {stagedValue!==undefined&&<button type="button" className="ghost" onClick={()=>onUndo(provider.id)}>Undo</button>}
+        <div className="provider-key-actions"><button type="button" className="secondary provider-update-button" onClick={()=>onUpdate(provider.id)} disabled={!canUpdate}>{checking?<><RefreshCw className="spin-slow" size={14}/>Checking…</>:<><RefreshCw size={14}/>Check API</>}</button>
+          {state==='saved'&&<button type="button" className="danger-text" onClick={()=>onRemove(provider.id)}>Remove</button>}
+          {stagedValue!==undefined&&<button type="button" className="ghost" onClick={()=>onUndo(provider.id)}>Undo</button>}</div>
       </div>
-    })}</div>
+    })}</div><p className="provider-update-note">Check API reads the provider’s live model list, asks a working saved model to review it twice, canary-tests every proposed chat model, and activates the result only if validation passes. Save a newly entered key first.</p>
   </section>
 }
 function AccentPicker({value,set}:{value:AccentColor;set:(v:AccentColor)=>void}){const choices:AccentColor[]=['emerald','blue','teal','indigo','violet','rose','orange'];return <div className="accent-picker">{choices.map(color=><button type="button" key={color} className={`accent-swatch ${color} ${value===color?'active':''}`} title={color[0].toUpperCase()+color.slice(1)} aria-label={`Use ${color} interface color`} onClick={()=>set(color)}><span/></button>)}</div>}

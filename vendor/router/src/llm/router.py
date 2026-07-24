@@ -80,6 +80,61 @@ class ModelRegistry:
         raise KeyError(f"Unknown model_name: `{model_name}`.")
 
 
+def _apply_model_config(
+    payload: dict[str, tp.Any],
+    model_config: dict[str, tp.Any] | None,
+) -> dict[str, tp.Any]:
+    """Apply only the declarative request controls supported by the router.
+
+    The application derives this config from an allowlisted provider adapter.
+    Keeping a second allowlist here prevents a malformed database row from
+    becoming an arbitrary provider payload.
+    """
+    configured = dict(payload)
+    if not isinstance(model_config, dict):
+        return configured
+    removable = {"temperature", "top_p", "top_k", "presence_penalty", "frequency_penalty"}
+    remove = model_config.get("remove_parameters")
+    if isinstance(remove, list):
+        for key in remove:
+            if key in removable:
+                configured.pop(key, None)
+    extra = model_config.get("extra_parameters")
+    if isinstance(extra, dict):
+        thinking = extra.get("thinking")
+        if (
+            isinstance(thinking, dict)
+            and thinking.get("type") in {"enabled", "disabled"}
+        ):
+            configured["thinking"] = {"type": thinking["type"]}
+        effort = extra.get("reasoning_effort")
+        if effort in {"high", "max"}:
+            configured["reasoning_effort"] = effort
+    return configured
+
+
+def _safe_response_stats(
+    response_data: dict[str, tp.Any],
+    summarizer: tp.Callable[..., dict[str, tp.Any]],
+) -> dict[str, tp.Any]:
+    """Keep a successful completion successful when usage telemetry changes."""
+    try:
+        return summarizer(response_data, decimals=False)
+    except Exception:
+        usage = response_data.get("usage")
+        usage = dict(usage) if isinstance(usage, dict) else {}
+        prompt = usage.get("prompt_tokens")
+        completion = usage.get("completion_tokens")
+        if isinstance(prompt, (int, float)):
+            usage.setdefault("input_tokens", prompt)
+        if isinstance(completion, (int, float)):
+            usage.setdefault("output_tokens", completion)
+        if "total_tokens" not in usage and isinstance(prompt, (int, float)) and isinstance(completion, (int, float)):
+            usage["total_tokens"] = prompt + completion
+        usage.setdefault("total_price", 0)
+        return usage
+
+
 async def deepseek_chat_post(
     session: aiohttp.ClientSession,
     payload: dict[str, tp.Any],
@@ -164,6 +219,58 @@ async def deepseek_reasoner_post(
         raise
 
 
+@lru_cache(maxsize=64)
+def deepseek_post_provider(model_name: str) -> PostFunc:
+    async def deepseek_post(
+        session: aiohttp.ClientSession,
+        payload: dict[str, tp.Any],
+        timeout: int = 300,
+        pool: str | None = None,  # ignored
+        token: str | None = None,
+        model_config: dict[str, tp.Any] | None = None,
+        **kwargs,
+    ) -> dict[str, tp.Any]:
+        if token is None:
+            auth._ensure_env_loaded()
+            token = os.getenv("EXTERNAL_DEEPSEEK_AUTH_TOKEN")
+        if not token:
+            raise ValueError("A DeepSeek API key is required for this model.")
+
+        url = "https://api.deepseek.com/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        payload_extended = tools.extend_dict({
+            "model": model_name,
+            "stream": False,
+        }, _apply_model_config(payload, model_config), inplace=False, override=False)
+
+        start_time = time.perf_counter()
+        response_data = await utils.post_strict_safe_fixed_utf_8(
+            session, url, headers, payload_extended, timeout=timeout, **kwargs
+        )
+        elapsed_time = time.perf_counter() - start_time
+
+        choices = response_data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise RuntimeError(f"DeepSeek returned no choices: {response_data}")
+        message = choices[0].get("message") if isinstance(choices[0], dict) else None
+        if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+            raise RuntimeError(f"DeepSeek returned no textual content: {response_data}")
+        stats_module = deepseek_reasoner if "pro" in model_name.lower() else deepseek_chat
+        stats = _safe_response_stats(response_data, stats_module.summarize_response_stats)
+        return {
+            "response": response_data,
+            "content": message["content"],
+            "reasoning_content": message.get("reasoning_content"),
+            "stats": stats,
+            "elapsed_time": elapsed_time,
+        }
+
+    return deepseek_post
+
+
 async def xiaomi_mimo_post(
     session: aiohttp.ClientSession,
     payload: dict[str, tp.Any],
@@ -207,6 +314,56 @@ async def xiaomi_mimo_post(
         raise
 
 
+@lru_cache(maxsize=64)
+def xiaomi_post_provider(model_name: str) -> PostFunc:
+    async def xiaomi_post(
+        session: aiohttp.ClientSession,
+        payload: dict[str, tp.Any],
+        timeout: int = 300,
+        pool: str | None = None,  # ignored
+        token: str | None = None,
+        model_config: dict[str, tp.Any] | None = None,
+        **kwargs,
+    ) -> dict[str, tp.Any]:
+        if token is None:
+            auth._ensure_env_loaded()
+            token = os.getenv("EXTERNAL_XIAOMI_MIMO_AUTH_TOKEN")
+        if not token:
+            raise ValueError("A Xiaomi MiMo API key is required for this model.")
+
+        url = "https://api.xiaomimimo.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        payload_extended = tools.extend_dict({
+            "model": model_name,
+            "stream": False,
+        }, _apply_model_config(payload, model_config), inplace=False, override=False)
+
+        start_time = time.perf_counter()
+        response_data = await utils.post_strict_safe_fixed_utf_8(
+            session, url, headers, payload_extended, timeout=timeout, **kwargs
+        )
+        elapsed_time = time.perf_counter() - start_time
+        choices = response_data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise RuntimeError(f"Xiaomi returned no choices: {response_data}")
+        message = choices[0].get("message") if isinstance(choices[0], dict) else None
+        if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+            raise RuntimeError(f"Xiaomi returned no textual content: {response_data}")
+        stats = _safe_response_stats(response_data, xiaomi_mimo.summarize_response_stats)
+        return {
+            "response": response_data,
+            "content": message["content"],
+            "reasoning_content": message.get("reasoning_content") or message.get("reasoning"),
+            "stats": stats,
+            "elapsed_time": elapsed_time,
+        }
+
+    return xiaomi_post
+
+
 @lru_cache(maxsize=256)
 def openrouter_post_provider(model_name: str) -> PostFunc:
     async def openrouter_post(
@@ -215,6 +372,7 @@ def openrouter_post_provider(model_name: str) -> PostFunc:
         timeout: int = 300,
         pool: str | None = None,  # ignored
         token: str | None = None,
+        model_config: dict[str, tp.Any] | None = None,
         **kwargs,
     ) -> dict[str, tp.Any]:
         if token is None:
@@ -233,7 +391,7 @@ def openrouter_post_provider(model_name: str) -> PostFunc:
         payload_extended = tools.extend_dict({
             "model": model_name,
             "stream": False,
-        }, payload, inplace=False, override=False)
+        }, _apply_model_config(payload, model_config), inplace=False, override=False)
 
         start_time = time.perf_counter()
         response_data = await utils.post_strict_safe_fixed_utf_8(
@@ -274,6 +432,7 @@ def openai_post_provider(model_name: str) -> PostFunc:
         timeout: int = 300,
         pool: str | None = None,  # ignored
         token: str | None = None,
+        model_config: dict[str, tp.Any] | None = None,
         **kwargs,
     ) -> dict[str, tp.Any]:
         if token is None:
@@ -290,7 +449,7 @@ def openai_post_provider(model_name: str) -> PostFunc:
         payload_extended = tools.extend_dict({
             "model": model_name,
             "stream": False,
-        }, payload, inplace=False, override=False)
+        }, _apply_model_config(payload, model_config), inplace=False, override=False)
 
         # Some lightweight OpenAI models are strict about supported sampling
         # parameters. Keep user prompts identical, but avoid failing because of
@@ -350,6 +509,7 @@ def anthropic_post_provider(model_name: str) -> PostFunc:
         timeout: int = 300,
         pool: str | None = None,  # ignored
         token: str | None = None,
+        model_config: dict[str, tp.Any] | None = None,
         **kwargs,
     ) -> dict[str, tp.Any]:
         if token is None:
@@ -368,7 +528,7 @@ def anthropic_post_provider(model_name: str) -> PostFunc:
             "model": model_name,
             "stream": False,
             "max_tokens": 4096,  # required by the Messages API
-        }, payload, inplace=False, override=False)
+        }, _apply_model_config(payload, model_config), inplace=False, override=False)
 
         # Opus 4.7+ and Sonnet 5 reject sampling parameters outright (400);
         # Haiku 4.5 still accepts them. Keep user prompts identical, but do
@@ -1056,9 +1216,11 @@ def zeliboba_post_provider(model_name: str) -> PostFunc:
 
 (MODEL_REGISTRY := ModelRegistry()).register_multiple({
     # external
-    "external:deepseek-chat": deepseek_chat_post,
-    "external:deepseek-reasoner": deepseek_reasoner_post,
-    "external:xiaomi-mimo": xiaomi_mimo_post,
+    # Legacy aliases stay routable during a rolling deployment. The public
+    # catalog and migration use the provider:model form below.
+    "external:deepseek-chat": deepseek_post_provider("deepseek-v4-flash"),
+    "external:deepseek-reasoner": deepseek_post_provider("deepseek-v4-pro"),
+    "external:xiaomi-mimo": xiaomi_post_provider("mimo-v2-flash"),
 
     # internal
     "internal:deepseek-reasoner": eliza_deepseek_reasoner_post,
@@ -1078,6 +1240,14 @@ def zeliboba_post_provider(model_name: str) -> PostFunc:
     "internal:alice-32b-latest": alice_32b_latest_post,
 })
 
+MODEL_REGISTRY.register_regex(
+    r"deepseek:(?P<name>[A-Za-z0-9._:/-]+)",
+    lambda match: (lambda: deepseek_post_provider(match["name"])),
+)
+MODEL_REGISTRY.register_regex(
+    r"xiaomi:(?P<name>[A-Za-z0-9._:/-]+)",
+    lambda match: (lambda: xiaomi_post_provider(match["name"])),
+)
 MODEL_REGISTRY.register_regex(
     r"internal:zeliboba-(?P<name>.+)",
     lambda match: (lambda: zeliboba_post_provider(match["name"])),

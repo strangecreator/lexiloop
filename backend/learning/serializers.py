@@ -219,18 +219,18 @@ class ProfileSerializer(serializers.ModelSerializer):
         return value
 
     def validate_generation_model(self, value):
-        if not is_supported_model(value):
+        if not is_supported_model(value, self.instance):
             raise serializers.ValidationError('Choose one of the public models offered by LexiLoop.')
         return value
 
     def validate_judge_model(self, value):
-        if not is_supported_model(value):
+        if not is_supported_model(value, self.instance):
             raise serializers.ValidationError('Choose one of the public models offered by LexiLoop.')
         return value
 
     def validate_image_model(self, value):
         # Empty string means "use the generation model".
-        if value and not is_supported_model(value):
+        if value and not is_supported_model(value, self.instance):
             raise serializers.ValidationError('Choose one of the public models offered by LexiLoop.')
         return value
 
@@ -248,7 +248,7 @@ class ProfileSerializer(serializers.ModelSerializer):
 
     def validate_sentence_judge_model(self, value):
         # Empty string means "use the definition judge model".
-        if value and not is_supported_model(value):
+        if value and not is_supported_model(value, self.instance):
             raise serializers.ValidationError('Choose one of the public models offered by LexiLoop.')
         return value
 

@@ -19,7 +19,7 @@ from learning.services.english import (
     normalized_identity,
     validate_english_term,
 )
-from learning.services.model_catalog import MODEL_IDS, TOKEN_PROVIDERS, token_provider_for
+from learning.services.model_catalog import MODEL_IDS, TOKEN_PROVIDERS, request_config_for, token_provider_for
 from learning.services.security import decrypt_secret
 
 GENERATION_SYSTEM_PROMPT = '''You create precise English-learning flashcards for advanced learners.
@@ -327,6 +327,7 @@ async def _post(model: str, token: str | None, messages: list[dict[str, str]], *
         return await router.llm.post(
             session=session, model=model, token=token, timeout=timeout,
             payload={'messages': messages, 'temperature': 0.1},
+            model_config=request_config_for(model),
             attempts=attempts or settings.LLM_RETRY_ATTEMPTS,
             backoff_seconds=settings.LLM_RETRY_BACKOFF_SECONDS,
             # With a single attempt the original timeout/connection error must

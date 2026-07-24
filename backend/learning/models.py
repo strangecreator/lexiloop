@@ -56,8 +56,8 @@ class UserProfile(models.Model):
     accent_color = models.CharField(max_length=16, choices=AccentColor.choices, default=AccentColor.EMERALD)
     # Enabled task types; due cards rotate deterministically through them.
     study_directions = models.JSONField(default=default_study_directions)
-    generation_model = models.CharField(max_length=200, default='external:deepseek-chat')
-    judge_model = models.CharField(max_length=200, default='external:deepseek-chat')
+    generation_model = models.CharField(max_length=200, default='deepseek:deepseek-v4-flash')
+    judge_model = models.CharField(max_length=200, default='deepseek:deepseek-v4-flash')
     # Empty string means "use the generation model" for image-lookup assistance.
     image_model = models.CharField(max_length=200, blank=True, default='')
     show_card_images = models.BooleanField(default=True)
@@ -71,6 +71,10 @@ class UserProfile(models.Model):
     # Encrypted API keys keyed by token provider ('deepseek', 'openai', …), so a
     # saved key survives switching between models of the same provider.
     provider_tokens_encrypted = models.JSONField(default=dict, blank=True)
+    # Per-account, schema-validated model catalogs activated by the provider
+    # updater. Keys are provider IDs; endpoint/auth/protocol details remain in
+    # server code and can never be supplied by an external model.
+    provider_catalog_overrides = models.JSONField(default=dict, blank=True)
     judge_acceptance_score = models.PositiveSmallIntegerField(default=5, validators=[MinValueValidator(1), MaxValueValidator(7)])
     # Empty string means "use the definition judge model" for sentence grading.
     sentence_judge_model = models.CharField(max_length=200, blank=True, default='')
@@ -233,6 +237,7 @@ class LlmUsage(models.Model):
         JUDGING = 'judging', 'Judging'
         SENTENCE_JUDGING = 'sentence_judging', 'Sentence judging'
         IMAGE = 'image', 'Image lookup'
+        PROVIDER_UPDATE = 'provider_update', 'Provider update'
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='llm_usage')
     pool = models.ForeignKey(Pool, on_delete=models.SET_NULL, null=True, blank=True, related_name='llm_usage')

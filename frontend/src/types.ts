@@ -2,6 +2,19 @@ export interface ModelOption {
   id:string; label:string; provider:string; description:string; token_label:string; token_provider:string;
   recommended_for:('generation'|'judge')[]; badge?:string; key_url?:string|null;
 }
+export interface ProviderUpdateInfo {
+  id:string; name:string; can_update:boolean; has_key:boolean; last_updated_at:string|null;
+  source_model:string|null; model_count:number;
+}
+export interface ModelCatalogResponse {models:ModelOption[]; providers:ProviderUpdateInfo[]}
+export interface ProviderUpdateResponse {
+  update:{
+    provider:string; provider_name:string; status:'updated'; changed:boolean; discovered_count:number;
+    activated_count:number; verified_models:string[]; rejected_models:Record<string,string>;
+    source_model:string|null; ai_runs:number; migrated_settings:string[];
+  };
+  models:ModelOption[]; providers:ProviderUpdateInfo[]; settings:Settings;
+}
 export type Theme = 'dark' | 'light' | 'system'
 export type AccentColor = 'violet' | 'indigo' | 'blue' | 'teal' | 'emerald' | 'rose' | 'orange'
 export type Direction = 'term_to_definition' | 'definition_to_term' | 'term_to_sentence'

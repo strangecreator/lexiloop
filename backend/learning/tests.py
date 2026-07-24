@@ -14,7 +14,7 @@ from learning.models import BulkGenerationItem, BulkGenerationJob, CardSchedule,
 from learning.services.bulk import process_bulk_job
 from learning.services.llm import _post_hedged
 from learning.services.scheduler import apply_rating, automatic_rating
-from learning.services.security import decrypt_secret
+from learning.services.security import decrypt_secret, encrypt_secret
 
 
 class ApiBase(TestCase):
@@ -165,10 +165,16 @@ class PoolAndCardTests(ApiBase):
         response = self.client.get('/api/models/')
         self.assertEqual(response.status_code, 200)
         ids = [item['id'] for item in response.data['models']]
-        self.assertIn('external:deepseek-chat', ids)
+        self.assertIn('deepseek:deepseek-v4-flash', ids)
+        self.assertIn('deepseek:deepseek-v4-pro', ids)
+        self.assertNotIn('external:deepseek-chat', ids)
         self.assertIn('openrouter:openai/gpt-5.2', ids)
         self.assertFalse(any(model_id.startswith('internal:') for model_id in ids))
         self.assertTrue(all(item.get('label') and item.get('provider') for item in response.data['models']))
+        self.assertEqual(
+            {provider['id'] for provider in response.data['providers']},
+            {'deepseek', 'openai', 'anthropic', 'openrouter', 'xiaomi'},
+        )
 
     def test_settings_reject_hidden_internal_model_names(self):
         response = self.client.patch('/api/settings/', {'generation_model': 'internal:gpt-5.2'}, format='json')
@@ -194,7 +200,7 @@ class PoolAndCardTests(ApiBase):
         response = self.client.patch('/api/settings/', {'judge_model': 'openai:gpt-5-nano'}, format='json')
         self.assertTrue(response.data['has_judge_token'])
         self.assertTrue(response.data['has_generation_token'])
-        response = self.client.patch('/api/settings/', {'judge_model': 'external:deepseek-chat'}, format='json')
+        response = self.client.patch('/api/settings/', {'judge_model': 'deepseek:deepseek-v4-flash'}, format='json')
         self.assertTrue(response.data['has_judge_token'])
         # An empty value deletes the stored key; other providers stay intact.
         response = self.client.patch('/api/settings/', {'provider_tokens': {'openai': ''}}, format='json')
@@ -206,6 +212,111 @@ class PoolAndCardTests(ApiBase):
         response = self.client.patch('/api/settings/', {'provider_tokens': {'acme': 'key'}}, format='json')
         self.assertEqual(response.status_code, 400)
         self.assertIn('provider_tokens', response.data)
+
+
+class ProviderUpdateTests(ApiBase):
+    def setUp(self):
+        super().setUp()
+        self.profile.provider_tokens_encrypted = {'deepseek': encrypt_secret('ds-test-key')}
+        self.profile.save(update_fields=['provider_tokens_encrypted'])
+
+    def test_update_requires_the_target_provider_key(self):
+        response = self.client.post('/api/providers/openai/update/', {}, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['code'], 'llm_not_configured')
+
+    def test_unknown_provider_is_not_a_network_destination(self):
+        response = self.client.post('/api/providers/attacker.example/update/', {}, format='json')
+        self.assertEqual(response.status_code, 404)
+
+    @patch('learning.services.provider_updates.canary_models')
+    @patch('learning.services.provider_updates.enrich_catalog_with_ai')
+    @patch('learning.services.provider_updates.discover_provider_models')
+    def test_update_activates_only_live_canary_verified_models(self, discover, enrich, canary):
+        discover.return_value = ['deepseek-v4-flash', 'deepseek-v4-pro']
+        enrich.return_value = ([
+            {
+                'id': 'deepseek-v4-flash',
+                'label': 'DeepSeek V4 Flash',
+                'description': 'Fast current text model.',
+                'recommended_for': ['generation', 'judge'],
+                'badge': 'Fast',
+            },
+            {
+                'id': 'deepseek-v4-pro',
+                'label': 'DeepSeek V4 Pro',
+                'description': 'Capable current text model.',
+                'recommended_for': ['generation'],
+                'badge': 'Reasoning',
+            },
+        ], 'deepseek:deepseek-v4-flash', 2)
+        canary.side_effect = lambda entries, token: (entries, {})
+
+        response = self.client.post('/api/providers/deepseek/update/', {}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['update']['activated_count'], 2)
+        self.assertEqual(response.data['update']['ai_runs'], 2)
+        self.assertEqual(
+            {item['id'] for item in response.data['models'] if item['token_provider'] == 'deepseek'},
+            {'deepseek:deepseek-v4-flash', 'deepseek:deepseek-v4-pro'},
+        )
+        discover.assert_called_once_with('deepseek', 'ds-test-key')
+        self.profile.refresh_from_db()
+        stored = self.profile.provider_catalog_overrides['deepseek']
+        self.assertEqual(stored['source_model'], 'deepseek:deepseek-v4-flash')
+        self.assertNotIn('ds-test-key', json.dumps(stored))
+
+    def test_catalog_override_is_account_scoped_and_serializer_accepts_it(self):
+        self.profile.provider_catalog_overrides = {
+            'deepseek': {
+                'models': [{
+                    'id': 'deepseek:deepseek-v5-fast',
+                    'label': 'DeepSeek V5 Fast',
+                    'provider': 'DeepSeek',
+                    'description': 'Verified model.',
+                    'token_label': 'DeepSeek API key',
+                    'token_provider': 'deepseek',
+                    'recommended_for': ['generation', 'judge'],
+                    'badge': 'API verified',
+                    'key_url': None,
+                }],
+            },
+        }
+        self.profile.save(update_fields=['provider_catalog_overrides'])
+        response = self.client.patch(
+            '/api/settings/',
+            {'generation_model': 'deepseek:deepseek-v5-fast'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+
+        other = User.objects.create_user('other-catalog', password='strong-pass-123')
+        other_profile = UserProfile.objects.create(user=other)
+        from learning.services.model_catalog import is_supported_model
+        self.assertFalse(is_supported_model('deepseek:deepseek-v5-fast', other_profile))
+
+    def test_ai_catalog_schema_drops_invented_and_non_live_ids(self):
+        from learning.services.provider_updates import _validate_ai_models
+        validated = _validate_ai_models({
+            'models': [
+                {
+                    'id': 'deepseek-v4-flash',
+                    'label': 'Flash',
+                    'description': 'Live.',
+                    'recommended_for': ['generation', 'judge'],
+                    'badge': 'Fast',
+                },
+                {
+                    'id': 'https://attacker.example/model',
+                    'label': 'Injected',
+                    'description': 'Not live.',
+                    'recommended_for': ['generation'],
+                    'badge': 'Bad',
+                },
+            ],
+        }, ['deepseek-v4-flash', 'deepseek-v4-pro'])
+        self.assertEqual([item['id'] for item in validated], ['deepseek-v4-flash'])
 
 
 class PoolOperationsTests(ApiBase):
@@ -1417,6 +1528,66 @@ class AnthropicRouterTests(TestCase):
             ))
         # Sonnet 5 rejects non-default sampling params; the router must strip them.
         self.assertNotIn('temperature', captured['payload'])
+
+
+class DeepSeekV4RouterTests(TestCase):
+    def test_v4_flash_uses_dynamic_model_id_and_non_thinking_policy(self):
+        import router
+        from learning.services.model_catalog import request_config_for, token_provider_for
+
+        captured = {}
+
+        async def fake_post(session, url, headers, payload, timeout=300, **kwargs):
+            captured.update(url=url, headers=headers, payload=payload)
+            return {
+                'choices': [{'message': {'content': '{"ok": true}'}}],
+                'usage': {
+                    'prompt_cache_hit_tokens': 10,
+                    'prompt_cache_miss_tokens': 20,
+                    'completion_tokens': 5,
+                },
+            }
+
+        self.assertEqual(token_provider_for('deepseek:deepseek-v9-fast'), 'deepseek')
+        with patch('router.utils.post_strict_safe_fixed_utf_8', side_effect=fake_post):
+            result = asyncio.run(router.llm.post(
+                None,
+                'deepseek:deepseek-v4-flash',
+                {'messages': [{'role': 'user', 'content': 'hi'}], 'temperature': 0.1},
+                token='ds-test',
+                model_config=request_config_for('deepseek:deepseek-v4-flash'),
+                verbose=False,
+            ))
+        self.assertEqual(captured['url'], 'https://api.deepseek.com/chat/completions')
+        self.assertEqual(captured['payload']['model'], 'deepseek-v4-flash')
+        self.assertEqual(captured['payload']['thinking'], {'type': 'disabled'})
+        self.assertEqual(result['content'], '{"ok": true}')
+        self.assertIsNone(result['reasoning_content'])
+
+    def test_legacy_deepseek_alias_routes_to_v4_during_rollout(self):
+        import router
+        captured = {}
+
+        async def fake_post(session, url, headers, payload, timeout=300, **kwargs):
+            captured.update(payload=payload)
+            return {
+                'choices': [{'message': {'content': 'ok', 'reasoning_content': 'thought'}}],
+                'usage': {
+                    'prompt_cache_hit_tokens': 0,
+                    'prompt_cache_miss_tokens': 1,
+                    'completion_tokens': 1,
+                },
+            }
+
+        with patch('router.utils.post_strict_safe_fixed_utf_8', side_effect=fake_post):
+            asyncio.run(router.llm.post(
+                None,
+                'external:deepseek-reasoner',
+                {'messages': [{'role': 'user', 'content': 'hi'}]},
+                token='ds-test',
+                verbose=False,
+            ))
+        self.assertEqual(captured['payload']['model'], 'deepseek-v4-pro')
 
 
 class ImageUrlExtractionTests(TestCase):
