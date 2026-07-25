@@ -16,7 +16,7 @@ import requests
 
 # local imports
 import tools
-from .. import auth, utils
+from .. import auth, exceptions, utils
 from . import zeliboba
 from . import xiaomi_mimo
 from . import deepseek_chat
@@ -426,6 +426,53 @@ def openrouter_post_provider(model_name: str) -> PostFunc:
 
 @lru_cache(maxsize=256)
 def openai_post_provider(model_name: str) -> PostFunc:
+    def error_message(exc: exceptions.HTTPStatusError) -> str:
+        error = exc.body.get("error") if isinstance(exc.body, dict) else None
+        return str(error.get("message") or "").casefold() if isinstance(error, dict) else ""
+
+    def requires_responses_api(exc: exceptions.HTTPStatusError) -> bool:
+        message = error_message(exc)
+        return exc.status in {400, 404} and (
+            "v1/responses" in message
+            or "not supported in v1/chat/completions" in message
+            or "not a chat model" in message
+        )
+
+    def responses_payload(chat_payload: dict[str, tp.Any]) -> dict[str, tp.Any]:
+        converted: dict[str, tp.Any] = {
+            "model": chat_payload["model"],
+            "input": chat_payload.get("messages", []),
+            "stream": False,
+        }
+        max_output = chat_payload.get("max_completion_tokens", chat_payload.get("max_tokens"))
+        if isinstance(max_output, int) and max_output > 0:
+            converted["max_output_tokens"] = max_output
+        effort = chat_payload.get("reasoning_effort")
+        if isinstance(effort, str):
+            converted["reasoning"] = {"effort": effort}
+        # This adapter intentionally converts only the fields LexiLoop owns.
+        # Arbitrary provider payload keys cannot cross endpoint boundaries.
+        return converted
+
+    def responses_content(response_data: dict[str, tp.Any]) -> str:
+        direct = response_data.get("output_text")
+        if isinstance(direct, str) and direct.strip():
+            return direct
+        parts: list[str] = []
+        output = response_data.get("output")
+        if isinstance(output, list):
+            for item in output:
+                content = item.get("content") if isinstance(item, dict) else None
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    text = block.get("text")
+                    if block.get("type") == "output_text" and isinstance(text, str):
+                        parts.append(text)
+        return "".join(parts)
+
     async def openai_post(
         session: aiohttp.ClientSession,
         payload: dict[str, tp.Any],
@@ -456,25 +503,46 @@ def openai_post_provider(model_name: str) -> PostFunc:
         # an optional temperature field added by LexiLoop.
         if str(model_name).startswith(("gpt-5", "o")):
             payload_extended.pop("temperature", None)
+            max_tokens = payload_extended.pop("max_tokens", None)
+            if isinstance(max_tokens, int) and "max_completion_tokens" not in payload_extended:
+                payload_extended["max_completion_tokens"] = max_tokens
 
         start_time = time.perf_counter()
-        response_data = await utils.post_strict_safe_fixed_utf_8(
-            session, url, headers, payload_extended, timeout=timeout, **kwargs
-        )
+        used_responses_api = False
+        try:
+            response_data = await utils.post_strict_safe_fixed_utf_8(
+                session, url, headers, payload_extended, timeout=timeout, **kwargs
+            )
+        except exceptions.HTTPStatusError as exc:
+            if not requires_responses_api(exc):
+                raise
+            used_responses_api = True
+            response_data = await utils.post_strict_safe_fixed_utf_8(
+                session,
+                "https://api.openai.com/v1/responses",
+                headers,
+                responses_payload(payload_extended),
+                timeout=timeout,
+                **kwargs,
+            )
         elapsed_time = time.perf_counter() - start_time
 
-        choices = response_data.get("choices")
-        if not isinstance(choices, list) or not choices:
-            raise RuntimeError(f"OpenAI returned no choices: {response_data}")
-        message = choices[0].get("message") if isinstance(choices[0], dict) else None
-        if not isinstance(message, dict):
-            raise RuntimeError(f"OpenAI returned no message: {response_data}")
-        content = message.get("content")
-        if isinstance(content, list):
-            content = "".join(
-                item.get("text", "") if isinstance(item, dict) else str(item)
-                for item in content
-            )
+        message: dict[str, tp.Any] = {}
+        if used_responses_api:
+            content = responses_content(response_data)
+        else:
+            choices = response_data.get("choices")
+            if not isinstance(choices, list) or not choices:
+                raise RuntimeError(f"OpenAI returned no choices: {response_data}")
+            message = choices[0].get("message") if isinstance(choices[0], dict) else None
+            if not isinstance(message, dict):
+                raise RuntimeError(f"OpenAI returned no message: {response_data}")
+            content = message.get("content")
+            if isinstance(content, list):
+                content = "".join(
+                    item.get("text", "") if isinstance(item, dict) else str(item)
+                    for item in content
+                )
         if not isinstance(content, str) or not content.strip():
             raise RuntimeError(f"OpenAI returned no textual content: {response_data}")
 

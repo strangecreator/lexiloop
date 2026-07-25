@@ -2,7 +2,7 @@
 
 LexiLoop is a Django + React platform for building and retaining English vocabulary. It combines one-field AI card creation, semantic answer judging, durable high-volume generation, server-side pagination, PostgreSQL storage, HTTPS deployment, and an Anki-inspired review scheduler with a polished responsive interface.
 
-Version **1.26.1** makes provider APIs self-refreshing at the model layer. Settings → Saved API keys now has a per-provider **Check API** action: LexiLoop reads the provider’s authenticated live model list, keeps every existing choice, deterministically adds every usable listed text model, and uses a two-pass AI review only to enrich safe metadata. Representative canaries report compatibility warnings without destructively removing models. DeepSeek’s retired aliases are migrated to V4 Flash/Pro immediately.
+Version **1.26.2** makes provider APIs self-refreshing at the model layer. Settings → Saved API keys now has a per-provider **Check API** action: LexiLoop reads the provider’s authenticated live model list, keeps every existing choice, deterministically adds every usable listed text model, and uses a two-pass AI review only to enrich safe metadata. Representative canaries report compatibility warnings without destructively removing models. DeepSeek’s retired aliases are migrated to V4 Flash/Pro immediately.
 
 ## Highlights
 
@@ -21,6 +21,14 @@ Version **1.26.1** makes provider APIs self-refreshing at the model layer. Setti
 - Dynamic page titles, cached pronunciation audio, custom favicon, and responsive UI.
 - Dedicated routes: `/overview`, `/study`, `/library`, `/analytics`, `/settings`, `/auth`, `/register`, and `/admin/`.
 - Unknown URLs return a custom LexiLoop 404 page instead of the SPA shell.
+
+## v1.26.2 changes
+
+### OpenAI protocol compatibility
+
+- GPT-5 and o-series requests translate LexiLoop’s provider-neutral output cap to OpenAI’s current `max_completion_tokens` Chat Completions field.
+- Models that explicitly reject Chat Completions as an endpoint retry through the Responses API using a strict, code-owned message/output conversion.
+- The same compatibility path is exercised by catalog canaries, so warnings now distinguish real deprecations from obsolete request parameters.
 
 ## v1.26.1 changes
 

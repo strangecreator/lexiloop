@@ -454,7 +454,7 @@ async def _canary_one(entry: dict[str, Any], token: str) -> tuple[str, str | Non
                         {'role': 'user', 'content': 'Connection test.'},
                     ],
                     'temperature': 0,
-                    'max_tokens': 32,
+                    'max_tokens': 128,
                 },
                 model_config=model_config,
                 attempts=1,
