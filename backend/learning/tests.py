@@ -232,7 +232,7 @@ class ProviderUpdateTests(ApiBase):
     @patch('learning.services.provider_updates.canary_models')
     @patch('learning.services.provider_updates.enrich_catalog_with_ai')
     @patch('learning.services.provider_updates.discover_provider_models')
-    def test_update_activates_only_live_canary_verified_models(self, discover, enrich, canary):
+    def test_update_keeps_every_live_model_when_a_canary_warns(self, discover, enrich, canary):
         discover.return_value = ['deepseek-v4-flash', 'deepseek-v4-pro']
         enrich.return_value = ([
             {
@@ -250,12 +250,21 @@ class ProviderUpdateTests(ApiBase):
                 'badge': 'Reasoning',
             },
         ], 'deepseek:deepseek-v4-flash', 2)
-        canary.side_effect = lambda entries, token: (entries, {})
+        canary.side_effect = lambda entries, token: (
+            [item for item in entries if item['id'].endswith('flash')],
+            {'deepseek:deepseek-v4-pro': 'TimeoutError: probe timed out'},
+        )
 
         response = self.client.post('/api/providers/deepseek/update/', {}, format='json')
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['update']['activated_count'], 2)
+        self.assertEqual(response.data['update']['verified_models'], ['deepseek:deepseek-v4-flash'])
+        self.assertEqual(
+            response.data['update']['canary_warnings'],
+            {'deepseek:deepseek-v4-pro': 'TimeoutError: probe timed out'},
+        )
+        self.assertEqual(response.data['update']['rejected_models'], {})
         self.assertEqual(response.data['update']['ai_runs'], 2)
         self.assertEqual(
             {item['id'] for item in response.data['models'] if item['token_provider'] == 'deepseek'},
@@ -265,6 +274,11 @@ class ProviderUpdateTests(ApiBase):
         self.profile.refresh_from_db()
         stored = self.profile.provider_catalog_overrides['deepseek']
         self.assertEqual(stored['source_model'], 'deepseek:deepseek-v4-flash')
+        self.assertEqual(
+            {item['id'] for item in stored['models']},
+            {'deepseek:deepseek-v4-flash', 'deepseek:deepseek-v4-pro'},
+        )
+        self.assertIn('deepseek:deepseek-v4-pro', stored['canary_warnings'])
         self.assertNotIn('ds-test-key', json.dumps(stored))
 
     def test_catalog_override_is_account_scoped_and_serializer_accepts_it(self):
@@ -290,11 +304,77 @@ class ProviderUpdateTests(ApiBase):
             format='json',
         )
         self.assertEqual(response.status_code, 200)
+        catalog_response = self.client.get('/api/models/')
+        self.assertEqual(
+            {
+                item['id'] for item in catalog_response.data['models']
+                if item['token_provider'] == 'deepseek'
+            },
+            {
+                'deepseek:deepseek-v4-flash',
+                'deepseek:deepseek-v4-pro',
+                'deepseek:deepseek-v5-fast',
+            },
+        )
 
         other = User.objects.create_user('other-catalog', password='strong-pass-123')
         other_profile = UserProfile.objects.create(user=other)
         from learning.services.model_catalog import is_supported_model
         self.assertFalse(is_supported_model('deepseek:deepseek-v5-fast', other_profile))
+
+    def test_catalog_entries_include_all_live_ids_not_only_ai_shortlist(self):
+        from learning.services.provider_updates import _catalog_entries
+        live_ids = [f'gpt-test-{index:02d}' for index in range(25)]
+        enriched = [{
+            'id': live_ids[0],
+            'label': 'Reviewed model',
+            'description': 'Reviewed metadata.',
+            'recommended_for': ['generation'],
+            'badge': 'Reviewed',
+        }]
+
+        entries = _catalog_entries('openai', live_ids, enriched)
+
+        self.assertEqual(len(entries), 25)
+        self.assertEqual(
+            {item['id'] for item in entries},
+            {f'openai:{model_id}' for model_id in live_ids},
+        )
+        self.assertEqual(entries[0]['label'], 'Reviewed model')
+
+    @patch('learning.services.provider_updates.router.llm.post', new_callable=AsyncMock)
+    def test_deepseek_pro_canary_disables_thinking(self, post):
+        from learning.services.provider_updates import _canary_one
+        post.return_value = {'content': 'LEXILOOP_API_OK'}
+        entry = {
+            'id': 'deepseek:deepseek-v4-pro',
+            'recommended_for': ['generation'],
+        }
+
+        model_id, error = asyncio.run(_canary_one(entry, 'ds-test-key'))
+
+        self.assertEqual(model_id, 'deepseek:deepseek-v4-pro')
+        self.assertIsNone(error)
+        config = post.await_args.kwargs['model_config']
+        self.assertEqual(config['extra_parameters'], {'thinking': {'type': 'disabled'}})
+        self.assertNotIn('reasoning_effort', config['extra_parameters'])
+
+    @patch('learning.services.provider_updates.canary_models')
+    @patch('learning.services.provider_updates.enrich_catalog_with_ai')
+    @patch('learning.services.provider_updates.discover_provider_models')
+    def test_update_does_not_rewrite_a_selection_missing_from_live_listing(self, discover, enrich, canary):
+        self.profile.generation_model = 'deepseek:deepseek-v4-pro'
+        self.profile.save(update_fields=['generation_model'])
+        discover.return_value = ['deepseek-v4-flash']
+        enrich.return_value = ([], None, 0)
+        canary.side_effect = lambda entries, token: (entries, {})
+
+        response = self.client.post('/api/providers/deepseek/update/', {}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['settings']['generation_model'], 'deepseek:deepseek-v4-pro')
+        self.profile.refresh_from_db()
+        self.assertEqual(self.profile.generation_model, 'deepseek:deepseek-v4-pro')
 
     def test_ai_catalog_schema_drops_invented_and_non_live_ids(self):
         from learning.services.provider_updates import _validate_ai_models

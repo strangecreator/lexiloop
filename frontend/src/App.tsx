@@ -889,7 +889,8 @@ function SettingsPage({value,onSaved,notify}:{value:Settings;onSaved:(s:Settings
         has_sentence_token:server.has_sentence_token,token_status:server.token_status}
       setForm(merged);onSaved(merged)
       const ai=result.update.ai_runs?` · ${result.update.ai_runs}-pass AI review`:' · live API validation'
-      notify(`${result.update.provider_name}: ${result.update.activated_count} model${result.update.activated_count===1?'':'s'} verified${ai}`)
+      const warnings=Object.keys(result.update.canary_warnings||{}).length
+      notify(`${result.update.provider_name}: ${result.update.activated_count} model${result.update.activated_count===1?'':'s'} available · ${result.update.added_count} added${warnings?` · ${warnings} canary warning${warnings===1?'':'s'}`:''}${ai}`)
     }catch(e){notify((e as Error).message,'error')}finally{setUpdatingProvider(null)}
   }
   return <div className="settings-wrap"><section className="panel settings-section"><div className="settings-heading"><div className="settings-icon"><WandSparkles/></div><div><h2>Flashcard generation</h2><p>Choose a public model. LexiLoop handles the router identifier internally.</p></div><span className={`status ${form.has_generation_token?'ok':''}`}>{form.has_generation_token?'Key saved':'Key required'}</span></div><div className="settings-grid"><label>Generation model<ModelInput value={form.generation_model} set={v=>patch('generation_model',v)} models={models} role="generation"/></label><label>{generationModel?.token_label||'Provider API key'}<input type="text" name="lexiloop-generation-provider-token" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} data-lpignore="true" data-1p-ignore="true" data-form-type="other" value={tokenValue(generationModel)} onChange={e=>generationModel&&stageToken(generationModel.token_provider,e.target.value)} placeholder={tokenPlaceholder(generationModel)}/><small>Encrypted at rest and never returned by the API. Saved once per provider.</small></label></div></section>
@@ -907,7 +908,7 @@ function SettingsPage({value,onSaved,notify}:{value:Settings;onSaved:(s:Settings
   </div>
 }
 function ProviderKeysSection({models,providers,status,staged,updating,onUpdate,onRemove,onUndo}:{models:ModelOption[];providers:ProviderUpdateInfo[];status:Record<string,boolean>;staged:Record<string,string>;updating:string|null;onUpdate:(provider:string)=>void;onRemove:(provider:string)=>void;onUndo:(provider:string)=>void}){
-  const fallback=[...new Map(models.map(model=>[model.token_provider,{id:model.token_provider,name:model.provider.split(' · ')[0],token_label:model.token_label,last_updated_at:null}])).values()]
+  const fallback=[...new Map(models.map(model=>[model.token_provider,{id:model.token_provider,name:model.provider.split(' · ')[0],token_label:model.token_label,last_updated_at:null,warning_count:0}])).values()]
   const rows=providers.length?providers.map(provider=>({...provider,token_label:models.find(model=>model.token_provider===provider.id)?.token_label||`${provider.name} API key`})):fallback
   if(!rows.length)return null
   return <section className="panel settings-section"><div className="settings-heading"><div className="settings-icon"><KeyRound/></div><div><h2>Saved API keys</h2><p>One key per provider. Every model of that provider uses it automatically.</p></div></div>
@@ -919,13 +920,13 @@ function ProviderKeysSection({models,providers,status,staged,updating,onUpdate,o
       const canUpdate=state==='saved'&&!updating
       return <div className="provider-key-row" key={provider.id}>
         <span className={`provider-key-dot ${state}`}/>
-        <div><b>{provider.name}</b><small>{provider.token_label}{provider.last_updated_at?` · checked ${new Date(provider.last_updated_at).toLocaleDateString()}`:''}</small></div>
+        <div><b>{provider.name}</b><small>{provider.token_label}{provider.last_updated_at?` · checked ${new Date(provider.last_updated_at).toLocaleDateString()}`:''}{provider.warning_count?` · ${provider.warning_count} canary warning${provider.warning_count===1?'':'s'}`:''}</small></div>
         <span className={`status ${state==='saved'||state==='staging'?'ok':''} ${state==='missing'?'neutral':''}`}>{labels[state]}</span>
         <div className="provider-key-actions"><button type="button" className="secondary provider-update-button" onClick={()=>onUpdate(provider.id)} disabled={!canUpdate}>{checking?<><RefreshCw className="spin-slow" size={14}/>Checking…</>:<><RefreshCw size={14}/>Check API</>}</button>
           {state==='saved'&&<button type="button" className="danger-text" onClick={()=>onRemove(provider.id)}>Remove</button>}
           {stagedValue!==undefined&&<button type="button" className="ghost" onClick={()=>onUndo(provider.id)}>Undo</button>}</div>
       </div>
-    })}</div><p className="provider-update-note">Check API reads the provider’s live model list, asks a working saved model to review it twice, canary-tests every proposed chat model, and activates the result only if validation passes. Save a newly entered key first.</p>
+    })}</div><p className="provider-update-note">Check API keeps your existing choices, adds every usable model in the provider’s live list, and asks a working saved model to enrich the catalog in two passes. Representative canaries report compatibility warnings without removing models. Save a newly entered key first.</p>
   </section>
 }
 function AccentPicker({value,set}:{value:AccentColor;set:(v:AccentColor)=>void}){const choices:AccentColor[]=['emerald','blue','teal','indigo','violet','rose','orange'];return <div className="accent-picker">{choices.map(color=><button type="button" key={color} className={`accent-swatch ${color} ${value===color?'active':''}`} title={color[0].toUpperCase()+color.slice(1)} aria-label={`Use ${color} interface color`} onClick={()=>set(color)}><span/></button>)}</div>}

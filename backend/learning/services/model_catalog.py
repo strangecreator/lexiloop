@@ -268,7 +268,8 @@ def request_config_for(model_id: str) -> dict[str, Any]:
     return {}
 
 
-def _safe_override_models(profile: Any | None, provider: str) -> list[dict[str, Any]]:
+def provider_override_models(profile: Any | None, provider: str) -> list[dict[str, Any]]:
+    """Return schema-checked account additions without replacing built-ins."""
     raw_updates = getattr(profile, 'provider_catalog_overrides', {}) if profile is not None else {}
     raw = raw_updates.get(provider, {}) if isinstance(raw_updates, dict) else {}
     models = raw.get('models', []) if isinstance(raw, dict) else []
@@ -276,7 +277,9 @@ def _safe_override_models(profile: Any | None, provider: str) -> list[dict[str, 
         return []
     built_in = next(item for item in MODEL_CATALOG if item['token_provider'] == provider)
     safe: list[dict[str, Any]] = []
-    for item in models[:24]:
+    # Provider catalogs can legitimately contain many dated snapshots. Keep a
+    # generous hard ceiling as a response-size guard, not as a curation rule.
+    for item in models[:500]:
         if not isinstance(item, dict):
             continue
         model_id = str(item.get('id') or '')
@@ -303,13 +306,22 @@ def _safe_override_models(profile: Any | None, provider: str) -> list[dict[str, 
 
 
 def model_catalog(profile: Any | None = None) -> list[dict[str, Any]]:
-    """Return the built-in catalog merged with this account's verified updates."""
+    """Return built-ins plus every schema-checked account discovery.
+
+    A provider's /models response can be entitlement-dependent or temporarily
+    incomplete. Account updates therefore overlay matching built-ins and append
+    new IDs; they never erase known-working choices.
+    """
     catalog = [dict(item) for item in MODEL_CATALOG]
+    positions = {item['id']: index for index, item in enumerate(catalog)}
     for provider in TOKEN_PROVIDERS:
-        override = _safe_override_models(profile, provider)
-        if override:
-            catalog = [item for item in catalog if item['token_provider'] != provider]
-            catalog.extend(override)
+        for item in provider_override_models(profile, provider):
+            index = positions.get(item['id'])
+            if index is None:
+                positions[item['id']] = len(catalog)
+                catalog.append(item)
+            else:
+                catalog[index] = item
     return catalog
 
 

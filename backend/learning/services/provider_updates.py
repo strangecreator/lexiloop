@@ -23,6 +23,7 @@ from learning.services.model_catalog import (
     api_model_name,
     canonical_model_id,
     model_catalog,
+    provider_override_models,
     request_config_for,
     token_provider_for,
 )
@@ -83,27 +84,34 @@ _NON_CHAT_MARKERS = (
     'audio', 'image', 'dall-e', 'whisper', 'search', 'computer-use',
 )
 _OPENROUTER_FAMILIES = ('openai/', 'anthropic/', 'google/', 'deepseek/', 'moonshotai/', 'xiaomi/')
+_DISCOVERY_MODEL_LIMIT = 500
+_CANARY_MODEL_LIMIT = 12
 
 CATALOG_ANALYST_PROMPT = '''You maintain the model picker for an AI vocabulary-flashcard application.
 The user message contains model IDs returned moments ago by the target provider's authenticated /models API. Those IDs are the only source of truth: never invent, alter, or normalize an ID.
-Select at most 12 text chat models suitable for (a) structured JSON flashcard generation and/or (b) short semantic judging. Prefer current general-purpose models, a useful spread of fast/value/capable choices, and non-dated aliases when both an alias and dated snapshot exist. Exclude embeddings, audio, image, moderation, realtime, and other non-chat models.
+Describe at most 12 especially useful text chat models for (a) structured JSON flashcard generation and/or (b) short semantic judging. LexiLoop deterministically keeps every usable ID in the live list, so your selection only enriches labels and recommendations; omitting an ID never removes it. Prefer current general-purpose models and a useful spread of fast/value/capable choices. Exclude embeddings, audio, image, moderation, realtime, and other non-chat models.
 Return exactly one JSON object and no Markdown:
 {"models":[{"id":"exact live API id","label":"concise human label","description":"one factual sentence; do not claim unprovided prices or benchmarks","recommended_for":["generation","judge"],"badge":"short badge"}]}
 recommended_for must contain generation, judge, or both. Keep every string concise.'''
 
 CATALOG_REVIEW_PROMPT = '''Act as the final reviewer of a provider model catalog.
-Use only IDs in live_model_ids. Correct omissions, fabricated IDs, non-chat entries, misleading labels, and unsuitable role recommendations in the proposed catalog. Keep at most 12 useful text chat models. Return exactly the same JSON schema and no Markdown:
+Use only IDs in live_model_ids. Correct fabricated IDs, non-chat entries, misleading labels, and unsuitable role recommendations in the proposed metadata. LexiLoop independently keeps all usable live IDs, so omissions are acceptable. Keep at most 12 useful text chat model descriptions. Return exactly the same JSON schema and no Markdown:
 {"models":[{"id":"exact live API id","label":"concise human label","description":"one factual sentence","recommended_for":["generation","judge"],"badge":"short badge"}]}'''
 
 
 def provider_update_summaries(profile: UserProfile) -> list[dict[str, Any]]:
     overrides = profile.provider_catalog_overrides if isinstance(profile.provider_catalog_overrides, dict) else {}
     saved = profile.provider_tokens_encrypted if isinstance(profile.provider_tokens_encrypted, dict) else {}
+    counts: dict[str, int] = {}
+    for item in model_catalog(profile):
+        provider = item['token_provider']
+        counts[provider] = counts.get(provider, 0) + 1
     summaries: list[dict[str, Any]] = []
     for provider, spec in PROVIDER_SPECS.items():
         update = overrides.get(provider, {})
         update = update if isinstance(update, dict) else {}
-        models = update.get('models') if isinstance(update.get('models'), list) else []
+        warnings = update.get('canary_warnings')
+        warnings = warnings if isinstance(warnings, dict) else {}
         summaries.append({
             'id': provider,
             'name': spec.name,
@@ -111,7 +119,8 @@ def provider_update_summaries(profile: UserProfile) -> list[dict[str, Any]]:
             'has_key': bool(saved.get(provider)),
             'last_updated_at': update.get('updated_at') if isinstance(update.get('updated_at'), str) else None,
             'source_model': update.get('source_model') if isinstance(update.get('source_model'), str) else None,
-            'model_count': len(models),
+            'model_count': counts.get(provider, 0),
+            'warning_count': len(warnings),
         })
     return summaries
 
@@ -145,7 +154,7 @@ def _filter_live_ids(provider: str, raw_ids: list[str]) -> list[str]:
         clean = [value for value in clean if 'mimo' in value.casefold()]
     elif provider == 'deepseek':
         clean = [value for value in clean if value.startswith('deepseek-')]
-    return clean[:80]
+    return clean[:_DISCOVERY_MODEL_LIMIT]
 
 
 def discover_provider_models(provider: str, token: str) -> list[str]:
@@ -204,9 +213,9 @@ def _fallback_metadata(model_id: str) -> dict[str, Any]:
     return {
         'id': model_id,
         'label': _human_label(model_id),
-        'description': 'Live text model discovered from the provider API and verified with a LexiLoop canary request.',
+        'description': 'Text model discovered from the provider’s authenticated live API catalog.',
         'recommended_for': roles,
-        'badge': 'Reasoning' if capable else 'Fast' if fast else 'API verified',
+        'badge': 'Reasoning' if capable else 'Fast' if fast else 'Live API',
     }
 
 
@@ -400,13 +409,11 @@ def _catalog_entries(
 ) -> list[dict[str, Any]]:
     spec = PROVIDER_SPECS[provider]
     by_id = {item['id']: item for item in enriched}
-    # Small provider catalogs should expose every live text model even if the
-    # analyst omitted one. Large catalogs use the analyst's curated subset.
-    selected_ids = live_ids if len(live_ids) <= 12 else [item['id'] for item in enriched]
-    if not selected_ids:
-        selected_ids = live_ids[:12]
     entries: list[dict[str, Any]] = []
-    for api_id in selected_ids[:12]:
+    # Membership comes from authenticated discovery, never from an LLM. The
+    # analyst may enrich a subset, while deterministic metadata covers every
+    # other usable ID.
+    for api_id in live_ids:
         metadata = by_id.get(api_id) or _fallback_metadata(api_id)
         entries.append({
             'id': f'{provider}:{api_id}',
@@ -424,6 +431,14 @@ def _catalog_entries(
 
 async def _canary_one(entry: dict[str, Any], token: str) -> tuple[str, str | None]:
     model_id = entry['id']
+    model_config = request_config_for(model_id)
+    # A canary checks the model name and chat wire format, not reasoning
+    # quality. Disabling thinking avoids false DeepSeek Pro timeouts.
+    if token_provider_for(model_id) == 'deepseek':
+        model_config = {
+            **model_config,
+            'extra_parameters': {'thinking': {'type': 'disabled'}},
+        }
     try:
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=settings.PROVIDER_CANARY_TIMEOUT_SECONDS + 5)
@@ -441,7 +456,7 @@ async def _canary_one(entry: dict[str, Any], token: str) -> tuple[str, str | Non
                     'temperature': 0,
                     'max_tokens': 32,
                 },
-                model_config=request_config_for(model_id),
+                model_config=model_config,
                 attempts=1,
                 verbose=False,
             )
@@ -469,11 +484,6 @@ def canary_models(entries: list[dict[str, Any]], token: str) -> tuple[list[dict[
     return verified, errors
 
 
-def _replacement(entries: list[dict[str, Any]], role: str) -> str:
-    suitable = [item for item in entries if role in item['recommended_for']]
-    return (suitable or entries)[0]['id']
-
-
 def _activate(
     *,
     profile: UserProfile,
@@ -482,42 +492,51 @@ def _activate(
     live_count: int,
     source_model: str | None,
     ai_runs: int,
-) -> tuple[UserProfile, list[str], bool]:
+    verified_models: list[str],
+    canary_warnings: dict[str, str],
+) -> tuple[UserProfile, list[str], bool, int, int, int]:
     with transaction.atomic():
         locked = UserProfile.objects.select_for_update().get(pk=profile.pk)
         previous_ids = {
             item['id'] for item in model_catalog(locked)
             if item['token_provider'] == provider
         }
+        previous_overrides = provider_override_models(locked, provider)
+        merged_by_id = {item['id']: item for item in previous_overrides}
+        merged_by_id.update({item['id']: item for item in entries})
+        merged_entries = list(merged_by_id.values())
         overrides = deepcopy(locked.provider_catalog_overrides) if isinstance(locked.provider_catalog_overrides, dict) else {}
         overrides[provider] = {
-            'models': entries,
+            'models': merged_entries,
             'updated_at': timezone.now().isoformat(),
             'source_model': source_model,
             'ai_runs': ai_runs,
             'discovered_count': live_count,
+            'canary_verified_models': verified_models,
+            'canary_warnings': canary_warnings,
         }
         locked.provider_catalog_overrides = overrides
         migrated: list[str] = []
-        role_for_field = {
-            'generation_model': 'generation',
-            'judge_model': 'judge',
-            'image_model': 'generation',
-            'sentence_judge_model': 'judge',
-        }
-        new_ids = {item['id'] for item in entries}
-        for field, role in role_for_field.items():
+        for field in ('generation_model', 'judge_model', 'image_model', 'sentence_judge_model'):
             current = getattr(locked, field)
             if not current or token_provider_for(current) != provider:
                 continue
             canonical = canonical_model_id(current)
-            replacement = canonical if canonical in new_ids else _replacement(entries, role)
-            if current != replacement:
-                setattr(locked, field, replacement)
+            # Only canonicalize explicit legacy aliases. A temporarily absent
+            # /models entry must never silently change a user's selection.
+            if current != canonical:
+                setattr(locked, field, canonical)
                 migrated.append(field)
         locked.save(update_fields=['provider_catalog_overrides', *migrated, 'updated_at'])
+        new_ids = {
+            item['id'] for item in model_catalog(locked)
+            if item['token_provider'] == provider
+        }
         changed = previous_ids != new_ids
-    return locked, migrated, changed
+        proposed_ids = {item['id'] for item in entries}
+        added_count = len(new_ids - previous_ids)
+        preserved_count = len(new_ids - proposed_ids)
+    return locked, migrated, changed, len(new_ids), added_count, preserved_count
 
 
 def update_provider_catalog(*, user, profile: UserProfile, provider: str) -> dict[str, Any]:
@@ -540,19 +559,22 @@ def update_provider_catalog(*, user, profile: UserProfile, provider: str) -> dic
         current=current,
     )
     proposed = _catalog_entries(provider, live_ids, enriched)
-    verified, canary_errors = canary_models(proposed, token)
-    if not verified:
-        first_error = next(iter(canary_errors.values()), 'No model returned a usable response.')
-        raise LlmResponseError(
-            f'{PROVIDER_SPECS[provider].name} listed models, but none passed a chat canary. {first_error}'
-        )
-    activated, migrated, changed = _activate(
+    enriched_ids = {f'{provider}:{item["id"]}' for item in enriched}
+    canary_candidates = sorted(
+        proposed,
+        key=lambda item: item['id'] not in enriched_ids,
+    )[:_CANARY_MODEL_LIMIT]
+    verified, canary_errors = canary_models(canary_candidates, token)
+    verified_ids = [item['id'] for item in verified]
+    activated, migrated, changed, available_count, added_count, preserved_count = _activate(
         profile=profile,
         provider=provider,
-        entries=verified,
+        entries=proposed,
         live_count=len(live_ids),
         source_model=source_model,
         ai_runs=ai_runs,
+        verified_models=verified_ids,
+        canary_warnings=canary_errors,
     )
     return {
         'provider': provider,
@@ -560,9 +582,15 @@ def update_provider_catalog(*, user, profile: UserProfile, provider: str) -> dic
         'status': 'updated',
         'changed': changed,
         'discovered_count': len(live_ids),
-        'activated_count': len(verified),
-        'verified_models': [item['id'] for item in verified],
-        'rejected_models': canary_errors,
+        'activated_count': available_count,
+        'added_count': added_count,
+        'preserved_count': preserved_count,
+        'canary_tested_count': len(canary_candidates),
+        'verified_models': verified_ids,
+        'canary_warnings': canary_errors,
+        # Kept for older clients. Canary warnings are intentionally not
+        # rejections and no discovered model is removed because of one probe.
+        'rejected_models': {},
         'source_model': source_model,
         'ai_runs': ai_runs,
         'migrated_settings': migrated,

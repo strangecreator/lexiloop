@@ -4,13 +4,14 @@ export interface ModelOption {
 }
 export interface ProviderUpdateInfo {
   id:string; name:string; can_update:boolean; has_key:boolean; last_updated_at:string|null;
-  source_model:string|null; model_count:number;
+  source_model:string|null; model_count:number; warning_count:number;
 }
 export interface ModelCatalogResponse {models:ModelOption[]; providers:ProviderUpdateInfo[]}
 export interface ProviderUpdateResponse {
   update:{
     provider:string; provider_name:string; status:'updated'; changed:boolean; discovered_count:number;
-    activated_count:number; verified_models:string[]; rejected_models:Record<string,string>;
+    activated_count:number; added_count:number; preserved_count:number; canary_tested_count:number;
+    verified_models:string[]; canary_warnings:Record<string,string>; rejected_models:Record<string,string>;
     source_model:string|null; ai_runs:number; migrated_settings:string[];
   };
   models:ModelOption[]; providers:ProviderUpdateInfo[]; settings:Settings;
