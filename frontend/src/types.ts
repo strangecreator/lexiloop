@@ -5,20 +5,34 @@ export interface ModelOption {
 export interface ProviderUpdateInfo {
   id:string; name:string; can_update:boolean; has_key:boolean; last_updated_at:string|null;
   source_model:string|null; model_count:number; warning_count:number;
+  adapter_revision:number|null; adapter_author_model:string|null;
 }
-export interface ModelCatalogResponse {models:ModelOption[]; providers:ProviderUpdateInfo[]}
-export interface ProviderUpdateResponse {
-  update:{
-    provider:string; provider_name:string; status:'updated'; changed:boolean; discovered_count:number;
-    activated_count:number; added_count:number; preserved_count:number; canary_tested_count:number;
-    verified_models:string[]; canary_warnings:Record<string,string>; rejected_models:Record<string,string>;
-    source_model:string|null; ai_runs:number; migrated_settings:string[];
-  };
-  models:ModelOption[]; providers:ProviderUpdateInfo[]; settings:Settings;
+export interface ModelCatalogResponse {models:ModelOption[]; providers:ProviderUpdateInfo[]; is_admin:boolean}
+export interface AdapterOutcome {
+  status:'activated'|'rejected'|'skipped'|'failed'; author_model:string|null; revision:number|null;
+  activated:boolean; verified_models:string[]; failures:Record<string,string>; summary:string;
+  problems:string[]; reason?:string; attempts?:number; baseline_verified_models?:string[];
+}
+export interface ProviderUpdateResult {
+  provider:string; provider_name:string; status:'updated'; changed:boolean; discovered_count:number;
+  activated_count:number; added_count:number; preserved_count:number; canary_tested_count:number;
+  verified_models:string[]; canary_warnings:Record<string,string>; rejected_models:Record<string,string>;
+  source_model:string|null; ai_runs:number; migrated_settings:string[];
+  adapter:AdapterOutcome; elapsed_seconds:number;
+}
+export type ProviderCheckStatus = 'queued'|'running'|'completed'|'failed'
+/** A check runs in the background worker; the client polls this until it settles. */
+export interface ProviderCheck {
+  id:string; provider:string; provider_name:string; status:ProviderCheckStatus;
+  stage:string; stage_label:string; error:string;
+  created_at:string; started_at:string|null; finished_at:string|null;
+  update:ProviderUpdateResult|null;
+  models?:ModelOption[]; providers?:ProviderUpdateInfo[]; settings?:Settings;
 }
 export type Theme = 'dark' | 'light' | 'system'
 export type AccentColor = 'violet' | 'indigo' | 'blue' | 'teal' | 'emerald' | 'rose' | 'orange'
 export type Direction = 'term_to_definition' | 'definition_to_term' | 'term_to_sentence'
+export type NewCardOrder = 'mixed' | 'after_reviews' | 'before_reviews'
 
 export interface Settings {
   theme: Theme; accent_color: AccentColor; study_directions: Direction[]; generation_model: string; has_generation_token: boolean;
@@ -29,7 +43,8 @@ export interface Settings {
   judge_acceptance_score: number;
   sentence_judge_model: string; has_sentence_token: boolean; sentence_acceptance_score: number;
   show_images_term_to_sentence: boolean;
-  daily_new_limit: number; learning_steps_minutes: number[]; relearning_steps_minutes: number[];
+  daily_new_limit: number; new_card_order: NewCardOrder;
+  learning_steps_minutes: number[]; relearning_steps_minutes: number[];
   graduating_interval_days: number; easy_interval_days: number; easy_bonus: number;
   hard_multiplier: number; lapse_multiplier: number; minimum_ease: number;
   term_to_definition_easy_seconds: number; term_to_definition_good_seconds: number;

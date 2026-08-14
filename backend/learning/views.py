@@ -19,7 +19,7 @@ from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.views import APIView
 
-from learning.models import BulkGenerationItem, BulkGenerationJob, CardSchedule, Flashcard, LlmUsage, Pool, ReviewLog, UserProfile
+from learning.models import BulkGenerationItem, BulkGenerationJob, CardSchedule, Flashcard, LlmUsage, Pool, ProviderCheckJob, ReviewLog, UserProfile
 from learning.serializers import BulkGenerationJobSerializer, FlashcardSerializer, PoolSerializer, ProfileSerializer, RegisterSerializer
 from learning.services.english import (
     InvalidEnglishTerm,
@@ -35,13 +35,14 @@ from learning.exceptions import LlmResponseError
 from learning.services.llm import craft_image_query, generate_flashcard, judge_definition, judge_sentence, resolve_image_url
 from learning.services.pronunciation import PronunciationError, generate_pronunciation
 from learning.services.model_catalog import model_catalog
+from learning.services.adapters import adapter_revisions, rollback_adapter
 from learning.services.provider_updates import (
     PROVIDER_SPECS,
     provider_update_summaries,
-    update_provider_catalog,
 )
-from learning.services.scheduler import apply_rating, automatic_rating, priority
-from learning.services.queues import due_breakdown, due_cards, introduced_new_today, remaining_new_slots
+from learning.services.security import decrypt_secret
+from learning.services.scheduler import apply_rating, automatic_rating
+from learning.services.queues import due_breakdown, introduced_new_today, remaining_new_slots, study_queue
 from learning.services.pools import next_pool_accent, pool_has_active_job, transfer_pool
 from learning.services.bulk import refresh_job_counts
 
@@ -80,9 +81,30 @@ class LogoutView(APIView):
         return Response(status=204)
 
 
+def is_platform_admin(user) -> bool:
+    """Who may run provider maintenance.
+
+    Django ships ``is_staff`` (admin-site access) and ``is_superuser``; there is
+    no ``is_admin`` field. Staff is the platform-maintainer flag here, and a
+    superuser always counts as one.
+    """
+    return bool(user and user.is_authenticated and (user.is_staff or user.is_superuser))
+
+
+class IsPlatformAdmin(IsAuthenticated):
+    message = 'Only platform administrators can run provider maintenance.'
+
+    def has_permission(self, request, view):
+        return super().has_permission(request, view) and is_platform_admin(request.user)
+
+
 class MeView(APIView):
     def get(self, request):
-        return Response({'username': request.user.username, 'settings': ProfileSerializer(profile_for(request.user)).data})
+        return Response({
+            'username': request.user.username,
+            'is_admin': is_platform_admin(request.user),
+            'settings': ProfileSerializer(profile_for(request.user)).data,
+        })
 
 
 class SettingsView(APIView):
@@ -99,29 +121,105 @@ class SettingsView(APIView):
 class ModelsView(APIView):
     def get(self, request):
         profile = profile_for(request.user)
+        admin = is_platform_admin(request.user)
         return Response({
             'models': model_catalog(profile),
-            'providers': provider_update_summaries(profile),
+            'providers': provider_update_summaries(profile, can_update=admin),
+            'is_admin': admin,
         })
 
 
+def _check_payload(job, *, request):
+    """One shape for both the queued response and every poll of it.
+
+    The catalog and settings ride along once the run has finished so the client
+    refreshes everything in the same request that told it the check was done.
+    """
+    payload = {
+        'id': str(job.id),
+        'provider': job.provider,
+        'provider_name': PROVIDER_SPECS[job.provider].name if job.provider in PROVIDER_SPECS else job.provider,
+        'status': job.status,
+        'stage': job.stage,
+        'stage_label': ProviderCheckJob.Stage(job.stage).label if job.stage in ProviderCheckJob.Stage.values else '',
+        'error': job.error,
+        'created_at': job.created_at,
+        'started_at': job.started_at,
+        'finished_at': job.finished_at,
+        'update': job.result or None,
+    }
+    if job.status == ProviderCheckJob.Status.COMPLETED:
+        profile = profile_for(request.user)
+        payload['models'] = model_catalog(profile)
+        payload['providers'] = provider_update_summaries(profile, can_update=True)
+        payload['settings'] = ProfileSerializer(profile).data
+    return payload
+
+
 class ProviderUpdateView(APIView):
+    """Queue a provider check. The durable worker runs it; the client polls.
+
+    A check reads a live model list, probes every model, and can spend minutes
+    asking a model to rewrite the provider's connection module — none of which
+    fits inside a request.
+    """
+
+    permission_classes = [IsPlatformAdmin]
+
     def post(self, request, provider):
         if provider not in PROVIDER_SPECS:
             return Response({'detail': 'Unknown API provider.'}, status=404)
         profile = profile_for(request.user)
-        result = update_provider_catalog(
-            user=request.user,
-            profile=profile,
-            provider=provider,
-        )
-        activated = result.pop('profile')
-        return Response({
-            'update': result,
-            'models': model_catalog(activated),
-            'providers': provider_update_summaries(activated),
-            'settings': ProfileSerializer(activated).data,
-        })
+        if not decrypt_secret((profile.provider_tokens_encrypted or {}).get(provider, '')):
+            return Response({
+                'detail': f'No {PROVIDER_SPECS[provider].token_label} is saved. '
+                          'Save the provider key before checking for updates.',
+                'code': 'llm_not_configured',
+            }, status=400)
+        active = ProviderCheckJob.objects.filter(
+            user=request.user, provider=provider,
+            status__in=[ProviderCheckJob.Status.QUEUED, ProviderCheckJob.Status.RUNNING],
+        ).first()
+        if active:
+            return Response(_check_payload(active, request=request), status=409)
+        job = ProviderCheckJob.objects.create(user=request.user, provider=provider)
+        return Response(_check_payload(job, request=request), status=202)
+
+
+class ProviderCheckView(APIView):
+    permission_classes = [IsPlatformAdmin]
+
+    def get(self, request, job_id):
+        job = ProviderCheckJob.objects.filter(pk=job_id, user=request.user).first()
+        if not job:
+            return Response({'detail': 'Provider check not found.'}, status=404)
+        return Response(_check_payload(job, request=request))
+
+
+class ProviderAdapterView(APIView):
+    """Inspect and roll back the AI-authored connection modules."""
+
+    permission_classes = [IsPlatformAdmin]
+
+    def get(self, request, provider):
+        if provider not in PROVIDER_SPECS:
+            return Response({'detail': 'Unknown API provider.'}, status=404)
+        return Response({'provider': provider, 'revisions': adapter_revisions(provider)})
+
+    def post(self, request, provider):
+        if provider not in PROVIDER_SPECS:
+            return Response({'detail': 'Unknown API provider.'}, status=404)
+        try:
+            revision = int(request.data.get('revision'))
+        except (TypeError, ValueError):
+            return Response({'revision': ['Provide the revision number to activate.']}, status=400)
+        try:
+            result = rollback_adapter(provider=provider, revision=revision)
+        except LookupError:
+            return Response({'detail': f'Revision {revision} does not exist for {provider}.'}, status=404)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=409)
+        return Response({'provider': provider, 'activated': result, 'revisions': adapter_revisions(provider)})
 
 
 class PoolViewSet(viewsets.ModelViewSet):
@@ -513,8 +611,10 @@ class NextCardView(APIView):
                 'upcoming_images': _upcoming_images(ordered[1:], limit=_prefetch_limit(request, profile)),
             })
 
-        cards = due_cards(base_cards, user=request.user, profile=profile, now=now)
-        if not cards:
+        # study_queue already returns the queue in serving order, including the
+        # placement of new cards chosen by the profile's new_card_order.
+        ordered = study_queue(base_cards, user=request.user, profile=profile, now=now)
+        if not ordered:
             return Response({
                 'card': None, 'mode': mode, 'message': 'Nothing is due. You are caught up.',
                 'queue_count': 0, 'round_total': 0, 'round_completed': 0,
@@ -523,7 +623,7 @@ class NextCardView(APIView):
         # What the remaining queue consists of, so the Study page can explain
         # why the round grows when a failed card re-enters a learning step.
         breakdown = {'new': 0, 'learning': 0, 'review': 0}
-        for candidate in cards:
+        for candidate in ordered:
             state = candidate.schedule.state
             if state == CardSchedule.State.NEW:
                 breakdown['new'] += 1
@@ -531,15 +631,13 @@ class NextCardView(APIView):
                 breakdown['review'] += 1
             else:
                 breakdown['learning'] += 1
-        rank = {CardSchedule.State.RELEARNING: 4, CardSchedule.State.LEARNING: 3, CardSchedule.State.REVIEW: 2, CardSchedule.State.NEW: 1}
-        ordered = sorted(cards, key=lambda c: (rank.get(c.schedule.state, 0), priority(c.schedule, now)), reverse=True)
         card = ordered[0]
         direction = _direction(profile, card, directions_override)
         payload = FlashcardSerializer(card, context={'request': request}).data
         prompt = card.short_definition if direction == ReviewLog.Direction.DEFINITION_TO_TERM else card.term
         return Response({
             'card': payload, 'direction': direction, 'prompt': prompt, 'mode': mode,
-            'queue_count': len(cards),
+            'queue_count': len(ordered),
             'queue_breakdown': breakdown,
             'show_images': _images_enabled(profile, direction),
             'image_animations': list(profile.image_animations or []),

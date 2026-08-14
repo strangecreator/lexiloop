@@ -2,7 +2,7 @@
 
 LexiLoop is a Django + React platform for building and retaining English vocabulary. It combines one-field AI card creation, semantic answer judging, durable high-volume generation, server-side pagination, PostgreSQL storage, HTTPS deployment, and an Anki-inspired review scheduler with a polished responsive interface.
 
-Version **1.26.2** makes provider APIs self-refreshing at the model layer. Settings → Saved API keys now has a per-provider **Check API** action: LexiLoop reads the provider’s authenticated live model list, keeps every existing choice, deterministically adds every usable listed text model, and uses a two-pass AI review only to enrich safe metadata. Representative canaries report compatibility warnings without destructively removing models. DeepSeek’s retired aliases are migrated to V4 Flash/Pro immediately.
+Version **1.27.0** turns provider upkeep into a maintenance tool and fixes the queue starving new cards. **Check API** is now staff-only and rewrites the provider’s connection code: it asks the most capable non-flagship model the account can reach to write the Python module that talks to that provider, screens it, runs it sandboxed, and activates it only after it has answered live calls at least as well as the module in use. New cards are now mixed evenly into the day’s queue instead of waiting behind every review, and every scheduler setting explains itself in place.
 
 ## Highlights
 
@@ -21,6 +21,31 @@ Version **1.26.2** makes provider APIs self-refreshing at the model layer. Setti
 - Dynamic page titles, cached pronunciation audio, custom favicon, and responsive UI.
 - Dedicated routes: `/overview`, `/study`, `/library`, `/analytics`, `/settings`, `/auth`, `/register`, and `/admin/`.
 - Unknown URLs return a custom LexiLoop 404 page instead of the SPA shell.
+
+## v1.27.0 changes
+
+### Check API rewrites the connection code
+
+- Provider maintenance is now staff-only (`is_staff` / `is_superuser`). Everyone else sees the same key manager without the Check API control, on the site and in the Android app.
+- A check runs in the durable background worker and the client polls it, because provider latency is unbounded — the same DeepSeek completion has answered in 9 seconds and in over 300 — and rewriting a module is a minutes-long reasoning task. A real end-to-end run took 223 seconds.
+- It reads the provider's authenticated `/models` list, probes the models through the connection in use, and hands the resulting errors — in the provider's own words — to a model that rewrites the connection module.
+- The author is the most capable model the account's saved keys can reach, skipping the flagship tier: writing one adapter does not need a frontier model, and the tier is only used when nothing else is configured.
+- Generated modules run under a real containment boundary: static screening (no imports outside a tiny allowlist, no dynamic builtins, no private attributes, no module-level loops, literal provider URLs only), a curated `__builtins__`, and a single injected capability that can only reach that provider's own domains with capped timeouts and response size.
+- Nothing activates on trust. A revision is stored as `rejected` until it answers live provider calls at least as often as the current path; every revision is kept, inspectable at `GET /api/providers/<id>/adapter/`, and reactivated with one POST.
+- A generated module that throws at runtime falls back to the built-in router adapter, so a bad revision can never take study offline. Durable bulk generation deliberately stays on the reviewed built-in adapters.
+- A generated module reports token counts but cannot know prices, so LexiLoop prices every call from the tables in reviewed code and the AI usage page keeps its costs.
+
+### New cards stop waiting behind the review queue
+
+- New setting **New card order**: *Mix with reviews* (new default), *Show before reviews*, or *Show after reviews* — the previous behaviour.
+- Mixed spreads the day's new cards evenly through the session, so 20 new among 500 relearning cards now arrive about every 26th card instead of only after the last review.
+- The decision is derived from today's counts alone, so it survives a reload, a second device, and a queue that grows when a card lapses.
+- The Android offline scheduler carries the same port, matching the server bit for bit including its rounding.
+
+### Every scheduler setting explains itself
+
+- A question-mark next to each Anki-derived label opens a plain-English explanation: hover or keyboard focus on desktop, tap on mobile and in the app.
+- Covers learning and relearning steps, graduating and easy intervals, easy bonus, hard and lapse multipliers, minimum ease, the daily new limit, new card order, both accept scores, and the review timing bands.
 
 ## v1.26.2 changes
 

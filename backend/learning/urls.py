@@ -4,7 +4,7 @@ from rest_framework.routers import DefaultRouter
 from learning.views import (
     AnalyticsView, BulkGenerateView, BulkJobCancelView, BulkJobDetailView, FlashcardViewSet, GenerateView, JudgeView, LoginView,
     LogoutView, MeView, ModelsView, NextCardView, NormalizeTermsView, OverviewView, PoolViewSet, RegisterView,
-    PronunciationView, ProviderUpdateView, ReviewView, SettingsView,
+    PronunciationView, ProviderAdapterView, ProviderCheckView, ProviderUpdateView, ReviewView, SettingsView,
 )
 
 router = DefaultRouter()
@@ -19,6 +19,8 @@ urlpatterns = [
     path('settings/', SettingsView.as_view()),
     path('models/', ModelsView.as_view()),
     path('providers/<str:provider>/update/', ProviderUpdateView.as_view()),
+    path('providers/<str:provider>/adapter/', ProviderAdapterView.as_view()),
+    path('providers/checks/<uuid:job_id>/', ProviderCheckView.as_view()),
     path('generate/', GenerateView.as_view()),
     path('generate/normalize/', NormalizeTermsView.as_view()),
     path('generate/bulk/', BulkGenerateView.as_view()),

@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import os
 
 import dj_database_url
@@ -100,9 +101,21 @@ IMAGE_TOTAL_DEADLINE_SECONDS = int(os.getenv('IMAGE_TOTAL_DEADLINE_SECONDS', '40
 # Provider catalog refreshes first read the provider's authenticated /models
 # endpoint, then use a working saved LLM for two short schema-only review passes,
 # and finally canary the proposed text models.
-PROVIDER_DISCOVERY_TIMEOUT_SECONDS = int(os.getenv('PROVIDER_DISCOVERY_TIMEOUT_SECONDS', '20'))
-PROVIDER_UPDATE_LLM_TIMEOUT_SECONDS = int(os.getenv('PROVIDER_UPDATE_LLM_TIMEOUT_SECONDS', '25'))
-PROVIDER_CANARY_TIMEOUT_SECONDS = int(os.getenv('PROVIDER_CANARY_TIMEOUT_SECONDS', '25'))
+# A check runs in the durable worker, not in a request, because provider latency
+# is unbounded: the same DeepSeek completion has answered in 9 seconds and in
+# over 300. These timeouts are therefore sized for a bad day, not for Gunicorn's
+# 180-second worker ceiling.
+PROVIDER_DISCOVERY_TIMEOUT_SECONDS = int(os.getenv('PROVIDER_DISCOVERY_TIMEOUT_SECONDS', '30'))
+PROVIDER_UPDATE_LLM_TIMEOUT_SECONDS = int(os.getenv('PROVIDER_UPDATE_LLM_TIMEOUT_SECONDS', '90'))
+PROVIDER_CANARY_TIMEOUT_SECONDS = int(os.getenv('PROVIDER_CANARY_TIMEOUT_SECONDS', '60'))
+# Writing a whole connection module is a minutes-long reasoning task.
+PROVIDER_ADAPTER_AUTHORING = os.getenv('PROVIDER_ADAPTER_AUTHORING', '1').lower() in {'1', 'true', 'yes'}
+PROVIDER_ADAPTER_LLM_TIMEOUT_SECONDS = int(os.getenv('PROVIDER_ADAPTER_LLM_TIMEOUT_SECONDS', '300'))
+PROVIDER_UPDATE_BUDGET_SECONDS = int(os.getenv('PROVIDER_UPDATE_BUDGET_SECONDS', '1200'))
+PROVIDER_CHECK_STALE_AFTER_SECONDS = int(os.getenv('PROVIDER_CHECK_STALE_AFTER_SECONDS', '1500'))
+# Extra hostnames a generated adapter may call, as {provider: [host, ...]}. Only
+# needed when a provider moves to a domain the code does not know yet.
+PROVIDER_ADAPTER_EXTRA_DOMAINS = json.loads(os.getenv('PROVIDER_ADAPTER_EXTRA_DOMAINS', '{}'))
 BULK_ITEM_ATTEMPTS = int(os.getenv('BULK_ITEM_ATTEMPTS', '3'))
 BULK_MAX_ROUNDS = int(os.getenv('BULK_MAX_ROUNDS', '5'))
 BULK_TARGET_SUCCESS_RATIO = float(os.getenv('BULK_TARGET_SUCCESS_RATIO', '0.99'))

@@ -4,6 +4,7 @@ import time
 import json
 import pathlib
 import typing as tp
+from decimal import Decimal
 from functools import lru_cache
 from dataclasses import dataclass
 
@@ -78,6 +79,16 @@ class ModelRegistry:
                 return resolver.provider_factory(match)()
 
         raise KeyError(f"Unknown model_name: `{model_name}`.")
+
+
+# $ per token: (input, output). Cache reads bill at 0.1x input, cache writes
+# (5m TTL) at 1.25x input. Module level so both the built-in Anthropic adapter
+# and the application's pricing of AI-authored adapters read one table.
+ANTHROPIC_PRICES = {
+    "claude-haiku-4-5": (Decimal("0.000001"), Decimal("0.000005")),
+    "claude-sonnet-5": (Decimal("0.000003"), Decimal("0.000015")),
+    "claude-opus-4-8": (Decimal("0.000005"), Decimal("0.000025")),
+}
 
 
 def _apply_model_config(
@@ -561,15 +572,6 @@ def openai_post_provider(model_name: str) -> PostFunc:
 
 def anthropic_post_provider(model_name: str) -> PostFunc:
     """Direct Anthropic Messages API (https://api.anthropic.com/v1/messages)."""
-    from decimal import Decimal
-
-    # $ per token: (input, output). Cache reads bill at 0.1x input,
-    # cache writes (5m TTL) at 1.25x input.
-    ANTHROPIC_PRICES = {
-        "claude-haiku-4-5": (Decimal("0.000001"), Decimal("0.000005")),
-        "claude-sonnet-5": (Decimal("0.000003"), Decimal("0.000015")),
-        "claude-opus-4-8": (Decimal("0.000005"), Decimal("0.000025")),
-    }
 
     async def anthropic_post(
         session: aiohttp.ClientSession,

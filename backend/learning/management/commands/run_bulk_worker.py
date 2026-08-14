@@ -8,12 +8,13 @@ from django.core.management.base import BaseCommand
 from django.db import close_old_connections, transaction
 from django.utils import timezone
 
-from learning.models import BulkGenerationJob
+from learning.models import BulkGenerationJob, ProviderCheckJob
 from learning.services.bulk import process_bulk_job
+from learning.services.provider_updates import run_provider_check
 
 
 class Command(BaseCommand):
-    help = 'Run the durable LexiLoop bulk-generation worker.'
+    help = 'Run the durable LexiLoop background worker (bulk generation and provider checks).'
 
     def add_arguments(self, parser):
         parser.add_argument('--once', action='store_true', help='Process at most one job and exit.')
@@ -22,9 +23,18 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         once = options['once']
         poll_seconds = max(0.2, float(options['poll_seconds']))
-        self.stdout.write(self.style.SUCCESS('LexiLoop bulk worker started.'))
+        self.stdout.write(self.style.SUCCESS('LexiLoop background worker started.'))
         while True:
             close_old_connections()
+            # A provider check is short and someone is watching it, so it is
+            # claimed ahead of a bulk job that may run for many minutes.
+            check = self._claim_check()
+            if check is not None:
+                self.stdout.write(f'Running {check.provider} provider check {check.id}.')
+                run_provider_check(check.id)
+                if once:
+                    return
+                continue
             job = self._claim_job()
             if job is None:
                 if once:
@@ -35,6 +45,34 @@ class Command(BaseCommand):
             process_bulk_job(job.id)
             if once:
                 return
+
+    @staticmethod
+    def _claim_check():
+        """Take the next queued check, or one abandoned by a restarted worker."""
+        stale_before = timezone.now() - timedelta(seconds=settings.PROVIDER_CHECK_STALE_AFTER_SECONDS)
+        with transaction.atomic():
+            check = (
+                ProviderCheckJob.objects.select_for_update()
+                .filter(status=ProviderCheckJob.Status.QUEUED)
+                .order_by('created_at')
+                .first()
+            )
+            if check is None:
+                check = (
+                    ProviderCheckJob.objects.select_for_update()
+                    .filter(status=ProviderCheckJob.Status.RUNNING, heartbeat_at__lt=stale_before)
+                    .order_by('heartbeat_at')
+                    .first()
+                )
+            if check is None:
+                return None
+            now = timezone.now()
+            check.status = ProviderCheckJob.Status.RUNNING
+            check.started_at = check.started_at or now
+            check.heartbeat_at = now
+            check.error = ''
+            check.save(update_fields=['status', 'started_at', 'heartbeat_at', 'error', 'updated_at'])
+            return check
 
     @staticmethod
     def _claim_job():

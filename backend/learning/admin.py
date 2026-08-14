@@ -8,6 +8,7 @@ from learning.models import (
     LlmUsage,
     Pool,
     ReviewLog,
+    RouterAdapter,
     UserProfile,
 )
 
@@ -39,6 +40,26 @@ class BulkGenerationItemAdmin(admin.ModelAdmin):
     list_display = ('term', 'job', 'status', 'attempts', 'card', 'updated_at')
     search_fields = ('term', 'job__id', 'error')
     list_filter = ('status',)
+
+
+@admin.register(RouterAdapter)
+class RouterAdapterAdmin(admin.ModelAdmin):
+    """Read-only history of the AI-authored provider connection modules.
+
+    Activation goes through the API so a revision is always recompiled and
+    screened first; editing source here would bypass that.
+    """
+
+    list_display = ('provider', 'revision', 'status', 'author_model', 'activated_at', 'created_at')
+    list_filter = ('provider', 'status')
+    search_fields = ('provider', 'author_model', 'notes')
+    readonly_fields = tuple(field.name for field in RouterAdapter._meta.fields)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
 
 
 admin.site.register(UserProfile)

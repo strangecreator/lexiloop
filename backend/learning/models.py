@@ -36,6 +36,11 @@ class UserProfile(models.Model):
         LIGHT = 'light', 'Light'
         SYSTEM = 'system', 'System'
 
+    class NewCardOrder(models.TextChoices):
+        MIXED = 'mixed', 'Mix with reviews'
+        AFTER_REVIEWS = 'after_reviews', 'Show after reviews'
+        BEFORE_REVIEWS = 'before_reviews', 'Show before reviews'
+
     class AccentColor(models.TextChoices):
         VIOLET = 'violet', 'Violet'
         INDIGO = 'indigo', 'Indigo'
@@ -80,6 +85,9 @@ class UserProfile(models.Model):
     sentence_judge_model = models.CharField(max_length=200, blank=True, default='')
     sentence_acceptance_score = models.PositiveSmallIntegerField(default=5, validators=[MinValueValidator(1), MaxValueValidator(7)])
     daily_new_limit = models.PositiveIntegerField(default=20, validators=[MinValueValidator(0), MaxValueValidator(500)])
+    # Where new cards sit in the day's queue. "mixed" spreads them evenly so a
+    # large relearning backlog can never postpone every new word to the end.
+    new_card_order = models.CharField(max_length=16, choices=NewCardOrder.choices, default=NewCardOrder.MIXED)
     learning_steps_minutes = models.JSONField(default=default_learning_steps)
     relearning_steps_minutes = models.JSONField(default=default_relearning_steps)
     graduating_interval_days = models.FloatField(default=1.0, validators=[MinValueValidator(0.01)])
@@ -289,6 +297,101 @@ class BulkGenerationJob(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+
+
+class RouterAdapter(models.Model):
+    """One AI-authored connection module for a provider's chat API.
+
+    The provider updater asks a capable model to write the module that turns
+    LexiLoop's messages into that provider's current request shape and reads its
+    response back. The source is stored here rather than on disk so activation is
+    transactional, every past revision stays inspectable, and a bad revision can
+    be rolled back without a deploy. Only staff accounts can create one, every
+    revision is statically screened before it runs, and a revision is activated
+    only after it has answered live provider calls.
+    """
+
+    class Status(models.TextChoices):
+        DRAFT = 'draft', 'Draft'
+        ACTIVE = 'active', 'Active'
+        SUPERSEDED = 'superseded', 'Superseded'
+        REJECTED = 'rejected', 'Rejected'
+
+    provider = models.CharField(max_length=32)
+    revision = models.PositiveIntegerField(default=1)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+    source_code = models.TextField()
+    # Which model wrote it, and how the code was screened and proven.
+    author_model = models.CharField(max_length=250, blank=True)
+    screening = models.JSONField(default=dict, blank=True)
+    canary = models.JSONField(default=dict, blank=True)
+    notes = models.TextField(blank=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='router_adapters')
+    activated_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['provider', '-revision']
+        constraints = [
+            models.UniqueConstraint(fields=['provider', 'revision'], name='unique_adapter_revision_per_provider'),
+            models.UniqueConstraint(
+                fields=['provider'],
+                condition=models.Q(status='active'),
+                name='one_active_adapter_per_provider',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.provider} adapter r{self.revision} ({self.status})'
+
+
+class ProviderCheckJob(models.Model):
+    """One background "Check API" run for a provider.
+
+    Provider latency is unbounded — the same DeepSeek call has been observed
+    answering in 9 seconds and in over 300 — and rewriting a connection module
+    is a minutes-long reasoning task. Neither fits inside a Gunicorn worker's
+    180-second ceiling, so a check is queued here and executed by the durable
+    worker while the client polls.
+    """
+
+    class Status(models.TextChoices):
+        QUEUED = 'queued', 'Queued'
+        RUNNING = 'running', 'Running'
+        COMPLETED = 'completed', 'Completed'
+        FAILED = 'failed', 'Failed'
+
+    class Stage(models.TextChoices):
+        QUEUED = 'queued', 'Waiting for the worker'
+        DISCOVERING = 'discovering', 'Reading the live model list'
+        PROBING = 'probing', 'Probing models through the current connection'
+        AUTHORING = 'authoring', 'Writing the connection module'
+        VERIFYING = 'verifying', 'Verifying the new module against the provider'
+        SAVING = 'saving', 'Activating'
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='provider_checks')
+    provider = models.CharField(max_length=32)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.QUEUED)
+    stage = models.CharField(max_length=24, choices=Stage.choices, default=Stage.QUEUED)
+    result = models.JSONField(default=dict, blank=True)
+    error = models.TextField(blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    heartbeat_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    @property
+    def active(self) -> bool:
+        return self.status in {self.Status.QUEUED, self.Status.RUNNING}
+
+    def __str__(self):
+        return f'{self.provider} check ({self.status})'
 
 
 class BulkGenerationItem(models.Model):

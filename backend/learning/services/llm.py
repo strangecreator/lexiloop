@@ -19,7 +19,14 @@ from learning.services.english import (
     normalized_identity,
     validate_english_term,
 )
-from learning.services.model_catalog import MODEL_IDS, TOKEN_PROVIDERS, request_config_for, token_provider_for
+from learning.services.adapters import refresh_active_adapters
+from learning.services.model_catalog import (
+    MODEL_IDS,
+    TOKEN_PROVIDERS,
+    api_model_name,
+    request_config_for,
+    token_provider_for,
+)
 from learning.services.security import decrypt_secret
 
 GENERATION_SYSTEM_PROMPT = '''You create precise English-learning flashcards for advanced learners.
@@ -191,6 +198,10 @@ def _token(profile: UserProfile, operation: str) -> str | None:
     if not token and not settings.ALLOW_SERVER_LLM_TOKENS:
         label = TOKEN_PROVIDERS.get(provider, provider or 'provider')
         raise LlmConfigurationError(f'No {label} API key is saved. Open Settings and add one.')
+    # Every LLM operation resolves its key here, synchronously, just before the
+    # event loop starts — the one safe moment to read which generated adapters
+    # are active.
+    refresh_active_adapters()
     return token or None
 
 
@@ -319,9 +330,53 @@ def _validate_generation(data: dict[str, Any], parsed: GenerationRequest) -> dic
     return out
 
 
+async def _adapter_post(model: str, token: str | None, messages: list[dict[str, str]], timeout: int):
+    """Try the AI-authored connection module for this provider, if one is active.
+
+    Returns ``None`` when there is no active module or when it fails, so the
+    caller falls back to the built-in router adapter. A generated module can
+    therefore only ever add reachable models, never take the app offline.
+
+    The active revision is read from the process cache that the synchronous
+    entry point primed; no database work happens inside the event loop.
+    """
+    from learning.services.adapters import cached_adapter, priced_stats, run_adapter
+
+    provider = token_provider_for(model)
+    if not provider or not token:
+        return None
+    namespace = cached_adapter(provider)
+    if namespace is None:
+        return None
+    config = request_config_for(model)
+    removed = config.get('remove_parameters') or []
+    extra = config.get('extra_parameters') or {}
+    thinking = extra.get('thinking') if isinstance(extra, dict) else None
+    options = {
+        'temperature': None if 'temperature' in removed else 0.1,
+        'max_tokens': None,
+        'reasoning': 'high' if isinstance(thinking, dict) and thinking.get('type') == 'enabled' else 'off',
+    }
+    api_model = api_model_name(model)
+    try:
+        result = await run_adapter(
+            namespace, provider=provider, model=api_model, token=token,
+            messages=messages, options=options, timeout=timeout,
+        )
+    except Exception:
+        return None
+    # A generated module reports token counts but cannot know prices, so the
+    # AI usage page keeps its costs from the tables in reviewed code.
+    result['stats'] = priced_stats(provider, api_model, result)
+    return result
+
+
 async def _post(model: str, token: str | None, messages: list[dict[str, str]], *, attempts: int | None = None, timeout: int | None = None):
     import aiohttp
     timeout = timeout or settings.LLM_REQUEST_TIMEOUT_SECONDS
+    generated = await _adapter_post(model, token, messages, timeout)
+    if generated is not None:
+        return generated
     retrying = (attempts or settings.LLM_RETRY_ATTEMPTS) > 1
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout + 15)) as session:
         return await router.llm.post(
