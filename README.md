@@ -2,7 +2,7 @@
 
 LexiLoop is a Django + React platform for building and retaining English vocabulary. It combines one-field AI card creation, semantic answer judging, durable high-volume generation, server-side pagination, PostgreSQL storage, HTTPS deployment, and an Anki-inspired review scheduler with a polished responsive interface.
 
-Version **1.27.1** turns provider upkeep into a maintenance tool and fixes the queue starving new cards. **Check API** is now staff-only and rewrites the provider’s connection code: it asks the most capable non-flagship model the account can reach to write the Python module that talks to that provider, screens it, runs it sandboxed, and activates it only after it has answered live calls at least as well as the module in use. New cards are now mixed evenly into the day’s queue instead of waiting behind every review, and every scheduler setting explains itself in place.
+Version **1.27.2** turns provider upkeep into a maintenance tool and fixes the queue starving new cards. **Check API** is now staff-only and rewrites the provider’s connection code: it asks the most capable non-flagship model the account can reach to write the Python module that talks to that provider, screens it, runs it sandboxed, and activates it only after it has answered live calls at least as well as the module in use. New cards are now mixed evenly into the day’s queue instead of waiting behind every review, and every scheduler setting explains itself in place.
 
 ## Highlights
 
@@ -22,7 +22,7 @@ Version **1.27.1** turns provider upkeep into a maintenance tool and fixes the q
 - Dedicated routes: `/overview`, `/study`, `/library`, `/analytics`, `/settings`, `/auth`, `/register`, and `/admin/`.
 - Unknown URLs return a custom LexiLoop 404 page instead of the SPA shell.
 
-## v1.27.1 changes
+## v1.27.2 changes
 
 ### Check API rewrites the connection code
 
@@ -47,7 +47,7 @@ Version **1.27.1** turns provider upkeep into a maintenance tool and fixes the q
 
 - A question-mark next to each Anki-derived label opens a plain-English explanation: hover or keyboard focus on desktop, tap on mobile and in the app.
 - Covers learning and relearning steps, graduating and easy intervals, easy bonus, hard and lapse multipliers, minimum ease, the daily new limit, new card pacing, both accept scores, and the review timing bands.
-- The bubble is positioned from a measured height in layout pixels. `body` carries `zoom`, so `getBoundingClientRect` is in zoomed viewport pixels while an inline `top` is not: mixing the two placed the bubble 20% further down, on top of its own icon, where it thrashed `pointerenter`/`pointerleave` forever and never became visible. It is also pointer-transparent, so it can never become the hover target whatever its position.
+- The bubble is sized with a percentage rather than `vw` (the body zoom multiplies `vw`, which overflowed a 320px phone by 3px) and positioned from a measured height in layout pixels. `body` carries `zoom`, so `getBoundingClientRect` is in zoomed viewport pixels while an inline `top` is not: mixing the two placed the bubble 20% further down, on top of its own icon, where it thrashed `pointerenter`/`pointerleave` forever and never became visible. It is also pointer-transparent, so it can never become the hover target whatever its position.
 
 ## v1.26.2 changes
 

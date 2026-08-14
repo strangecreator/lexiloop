@@ -893,7 +893,7 @@ html:has(.sidebar.open),body:has(.sidebar.open){overflow:hidden}
   background:transparent;color:var(--muted2);cursor:help;transition:color .15s,background .15s}
 .help-tip:hover,.help-tip:focus-visible,.help-tip.open{color:var(--primary2);background:var(--primary-bg)}
 .help-tip:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
-.help-pop{position:fixed;z-index:80;box-sizing:border-box;width:min(320px,calc(100vw - 24px));
+.help-pop{position:fixed;z-index:80;box-sizing:border-box;width:min(320px,calc(100% - 24px));
   padding:13px 15px;border:1px solid var(--border2);border-radius:13px;
   background:var(--surface2);box-shadow:var(--shadow);pointer-events:none;animation:help-in .13s ease-out}
 .help-pop b{display:block;font:700 12px 'Manrope';color:var(--text);margin-bottom:5px}
