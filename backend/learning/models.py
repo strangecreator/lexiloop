@@ -36,11 +36,6 @@ class UserProfile(models.Model):
         LIGHT = 'light', 'Light'
         SYSTEM = 'system', 'System'
 
-    class NewCardOrder(models.TextChoices):
-        MIXED = 'mixed', 'Mix with reviews'
-        AFTER_REVIEWS = 'after_reviews', 'Show after reviews'
-        BEFORE_REVIEWS = 'before_reviews', 'Show before reviews'
-
     class AccentColor(models.TextChoices):
         VIOLET = 'violet', 'Violet'
         INDIGO = 'indigo', 'Indigo'
@@ -85,9 +80,10 @@ class UserProfile(models.Model):
     sentence_judge_model = models.CharField(max_length=200, blank=True, default='')
     sentence_acceptance_score = models.PositiveSmallIntegerField(default=5, validators=[MinValueValidator(1), MaxValueValidator(7)])
     daily_new_limit = models.PositiveIntegerField(default=20, validators=[MinValueValidator(0), MaxValueValidator(500)])
-    # Where new cards sit in the day's queue. "mixed" spreads them evenly so a
-    # large relearning backlog can never postpone every new word to the end.
-    new_card_order = models.CharField(max_length=16, choices=NewCardOrder.choices, default=NewCardOrder.MIXED)
+    # How early new cards appear in the day's queue, as the mean position of a
+    # new card: 0 puts every one after the reviews, 1 puts every one before
+    # them, 0.5 scatters them evenly. See services/queues.new_card_offsets.
+    new_card_pacing = models.FloatField(default=0.5, validators=[MinValueValidator(0.0), MaxValueValidator(1.0)])
     learning_steps_minutes = models.JSONField(default=default_learning_steps)
     relearning_steps_minutes = models.JSONField(default=default_relearning_steps)
     graduating_interval_days = models.FloatField(default=1.0, validators=[MinValueValidator(0.01)])

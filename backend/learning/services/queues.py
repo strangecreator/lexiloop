@@ -9,12 +9,89 @@ from learning.models import CardSchedule, Flashcard, ReviewLog, UserProfile
 from learning.services.scheduler import priority
 
 # Relearning first, then learning, then reviews. New cards are placed by
-# ``new_card_order`` rather than by this rank.
+# ``new_card_pacing`` rather than by this rank.
 NON_NEW_RANK = {
     CardSchedule.State.RELEARNING: 3,
     CardSchedule.State.LEARNING: 2,
     CardSchedule.State.REVIEW: 1,
 }
+
+
+_MASK64 = (1 << 64) - 1
+_GOLDEN = 0x9E3779B97F4A7C15
+_FNV_OFFSET = 0xCBF29CE484222325
+_FNV_PRIME = 0x100000001B3
+_TWO_POW_53 = float(1 << 53)
+
+
+def _fnv1a64(text: str) -> int:
+    value = _FNV_OFFSET
+    for byte in text.encode('utf-8'):
+        value = ((value ^ byte) * _FNV_PRIME) & _MASK64
+    return value
+
+
+def day_seed(username: str, day) -> int:
+    """A seed that is stable for one learner for one day, and portable.
+
+    The Android offline scheduler derives the same seed from the same inputs, so
+    both sides place new cards identically without exchanging any state.
+    """
+    return (_fnv1a64(username) ^ ((day.toordinal() * _GOLDEN) & _MASK64)) & _MASK64
+
+
+def _u01(seed: int, index: int) -> float:
+    """splitmix64, used as a hash rather than a stream.
+
+    Deliberately not random.Random: this exact arithmetic is reproducible in
+    Kotlin, which a Mersenne Twister stream is not.
+    """
+    value = (seed + _GOLDEN * (index + 1)) & _MASK64
+    value = ((value ^ (value >> 30)) * 0xBF58476D1CE4E5B9) & _MASK64
+    value = ((value ^ (value >> 27)) * 0x94D049BB133111EB) & _MASK64
+    value ^= value >> 31
+    return (value >> 11) / _TWO_POW_53
+
+
+def new_card_offsets(count: int, *, pacing: float, seed: int) -> list[float]:
+    """Where each of the day's new cards sits, as a fraction of the session.
+
+    ``pacing`` is the single knob: it is the *mean earliness* of a new card, so
+    the average new card lands at ``1 - pacing`` through the day.
+
+    Positions are drawn from the power-function family (a Beta with one unit
+    shape), which is the simplest distribution that spans exactly what is
+    wanted and stays closed-form — no incomplete-beta inverse to keep in step
+    across two languages:
+
+    * ``0.0`` — every new card at 1.0, i.e. strictly after the reviews.
+    * ``0.25`` — density rising towards the end; new cards cluster late but can
+      appear at any point.
+    * ``0.5`` — uniform. New cards are scattered evenly across the session.
+    * ``0.75`` — the mirror image: clustered early, still scattered.
+    * ``1.0`` — every new card at 0.0, i.e. strictly before the reviews.
+
+    The draw is a hash of (learner, day, index), so it is random-looking but
+    reproduces exactly on every recomputation — the queue is rebuilt on every
+    request and must not reshuffle underneath the learner.
+    """
+    if count <= 0:
+        return []
+    pacing = min(1.0, max(0.0, float(pacing)))
+    # The extremes are promises the UI makes, so they are exact, not merely very
+    # concentrated distributions.
+    if pacing <= 0.005:
+        return [1.0] * count
+    if pacing >= 0.995:
+        return [0.0] * count
+    if pacing <= 0.5:
+        exponent = pacing / (1.0 - pacing)
+        values = [_u01(seed, index) ** exponent for index in range(count)]
+    else:
+        exponent = (1.0 - pacing) / pacing
+        values = [1.0 - (1.0 - _u01(seed, index)) ** exponent for index in range(count)]
+    values.sort()
+    return values
 
 
 @dataclass(frozen=True)
@@ -65,31 +142,29 @@ def due_breakdown(cards: QuerySet[Flashcard], *, user, profile: UserProfile, now
     )
 
 
-def serve_new_next(*, new_done: int, cards_done: int, new_left: int, review_left: int) -> bool:
-    """Should the next card of a mixed session be a new one?
+def serve_new_next(*, new_done: int, cards_done: int, new_left: int, review_left: int, offsets: list[float]) -> bool:
+    """Should the next card of the session be a new one?
 
-    The day's whole workload is ``new_total`` new cards among ``total`` cards, so
-    an evenly mixed session has shown ``round(position * new_total / total)`` new
-    cards by the time it reaches ``position``. Serving a new card exactly when
-    the session has fallen behind that line spreads new cards evenly without
-    keeping any per-session state on the server: the same counts always produce
-    the same answer, so the decision survives reloads, a second device, and the
-    queue being recomputed on every request.
+    Each of the day's new cards owns a position in ``offsets`` — a fraction of
+    the day's workload, ascending. The next new card is served once the session
+    has reached its position. Nothing is remembered between requests: the same
+    counts always produce the same answer, so the decision survives a reload, a
+    second device, and the queue being rebuilt on every request.
 
-    Because the counts are re-read every time, a growing relearning pile lowers
-    the new-card share smoothly instead of postponing every new card behind it.
+    Because the counts are re-read every time, a growing relearning pile
+    stretches the day rather than postponing every new card behind it.
     """
-    if new_left <= 0:
+    if new_left <= 0 or not offsets:
         return False
     if review_left <= 0:
         return True
     review_done = max(0, cards_done - new_done)
-    new_total = new_done + new_left
-    total = new_total + review_done + review_left
+    total = new_done + new_left + review_done + review_left
     if total <= 0:
         return False
-    target = round((new_done + review_done + 1) * new_total / total)
-    return new_done < target
+    # Where the card about to be served sits in the day, in [0, 1].
+    progress = (new_done + review_done + 1) / total
+    return progress >= offsets[min(new_done, len(offsets) - 1)]
 
 
 def _ordered_non_new(cards: list[Flashcard], now) -> list[Flashcard]:
@@ -111,7 +186,7 @@ def study_queue(
     """The exact ordered queue Study serves for the selected scope.
 
     ``progress`` is an optional ``(new_done, cards_done)`` pair for today; it is
-    read from the review log when omitted. Only the mixed order needs it.
+    read from the review log when omitted.
     """
     now = now or timezone.now()
     due = cards.filter(suspended=False, schedule__due_at__lte=now).select_related('pool', 'schedule')
@@ -124,17 +199,23 @@ def study_queue(
 
     if not new_cards or not scheduled:
         return scheduled + new_cards
-    order = profile.new_card_order
-    if order == UserProfile.NewCardOrder.BEFORE_REVIEWS:
-        return new_cards + scheduled
-    if order == UserProfile.NewCardOrder.AFTER_REVIEWS:
-        return scheduled + new_cards
     if progress is None:
         progress = (introduced_new_today(user=user), reviews_today(user=user))
-    return _mix(scheduled, new_cards, progress=progress)
+    offsets = new_card_offsets(
+        progress[0] + len(new_cards),
+        pacing=profile.new_card_pacing,
+        seed=day_seed(user.username, timezone.localdate()),
+    )
+    return _mix(scheduled, new_cards, progress=progress, offsets=offsets)
 
 
-def _mix(scheduled: list[Flashcard], new_cards: list[Flashcard], *, progress: tuple[int, int]) -> list[Flashcard]:
+def _mix(
+    scheduled: list[Flashcard],
+    new_cards: list[Flashcard],
+    *,
+    progress: tuple[int, int],
+    offsets: list[float],
+) -> list[Flashcard]:
     """Interleave the two lists so new cards stay evenly spread.
 
     Only the head of the returned queue is served before the counts are read
@@ -150,6 +231,7 @@ def _mix(scheduled: list[Flashcard], new_cards: list[Flashcard], *, progress: tu
             cards_done=cards_done + len(queue),
             new_left=len(new_cards) - new_index,
             review_left=len(scheduled) - scheduled_index,
+            offsets=offsets,
         )
         if take_new:
             queue.append(new_cards[new_index])

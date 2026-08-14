@@ -2380,10 +2380,10 @@ class NewCardMixTests(ApiBase):
         schedule.due_at = timezone.now() + timedelta(days=3)
         schedule.save(update_fields=['state', 'due_at'])
 
-    def test_mixed_is_the_default_for_a_new_profile(self):
-        self.assertEqual(self.profile.new_card_order, UserProfile.NewCardOrder.MIXED)
+    def test_an_even_mix_is_the_default_for_a_new_profile(self):
+        self.assertEqual(self.profile.new_card_pacing, 0.5)
         response = self.client.get('/api/settings/')
-        self.assertEqual(response.data['new_card_order'], 'mixed')
+        self.assertEqual(response.data['new_card_pacing'], 0.5)
 
     def test_a_new_card_arrives_early_despite_a_large_relearning_pile(self):
         for index in range(60):
@@ -2400,13 +2400,14 @@ class NewCardMixTests(ApiBase):
             self._answer(card_id, previous_state=state)
 
         self.assertIn(CardSchedule.State.NEW, seen_states, 'no new card appeared in the first 12 cards')
-        # 20 new among 80 due is a new card roughly every fourth card.
-        self.assertGreaterEqual(seen_states.count(CardSchedule.State.NEW), 2)
-        self.assertLessEqual(seen_states.count(CardSchedule.State.NEW), 5)
+        # Placement is random, so the count in any short window varies; what must
+        # hold is that new cards are not exiled to the end. Over the whole
+        # session the share tracks the 1 - pacing mean (checked separately).
+        self.assertGreaterEqual(seen_states.count(CardSchedule.State.NEW), 1)
 
-    def test_after_reviews_keeps_the_previous_behaviour(self):
-        self.profile.new_card_order = UserProfile.NewCardOrder.AFTER_REVIEWS
-        self.profile.save(update_fields=['new_card_order'])
+    def test_pacing_zero_keeps_the_previous_behaviour(self):
+        self.profile.new_card_pacing = 0.0
+        self.profile.save(update_fields=['new_card_pacing'])
         for index in range(6):
             self._due_card(f'relearn{index}', CardSchedule.State.RELEARNING)
         self._due_card('fresh', CardSchedule.State.NEW)
@@ -2419,9 +2420,9 @@ class NewCardMixTests(ApiBase):
             self._answer(card_id, previous_state=state)
         self.assertEqual(CardSchedule.objects.get(card_id=self._serve()['card']['id']).state, CardSchedule.State.NEW)
 
-    def test_before_reviews_serves_the_new_cards_first(self):
-        self.profile.new_card_order = UserProfile.NewCardOrder.BEFORE_REVIEWS
-        self.profile.save(update_fields=['new_card_order'])
+    def test_pacing_one_serves_the_new_cards_first(self):
+        self.profile.new_card_pacing = 1.0
+        self.profile.save(update_fields=['new_card_pacing'])
         for index in range(4):
             self._due_card(f'relearn{index}', CardSchedule.State.RELEARNING)
         for index in range(2):
@@ -2440,8 +2441,8 @@ class NewCardMixTests(ApiBase):
     def test_relearning_still_outranks_review_inside_the_non_new_queue(self):
         self._due_card('later-review', CardSchedule.State.REVIEW, minutes_overdue=600)
         self._due_card('urgent-relearn', CardSchedule.State.RELEARNING, minutes_overdue=1)
-        self.profile.new_card_order = UserProfile.NewCardOrder.AFTER_REVIEWS
-        self.profile.save(update_fields=['new_card_order'])
+        self.profile.new_card_pacing = 0.0
+        self.profile.save(update_fields=['new_card_pacing'])
         self.assertEqual(self._serve()['card']['term'], 'urgent-relearn')
 
     def test_the_daily_new_limit_still_caps_the_mix(self):
@@ -2460,31 +2461,46 @@ class NewCardMixTests(ApiBase):
             self._due_card(f'fresh{index}', CardSchedule.State.NEW)
         self.assertEqual(CardSchedule.objects.get(card_id=self._serve()['card']['id']).state, CardSchedule.State.NEW)
 
-    def test_the_serving_rule_is_stateless_and_evenly_spread(self):
-        from learning.services.queues import serve_new_next
-        # 20 new among 100 cards: a new card every fifth card, decided only from
-        # counts so a page reload or a second device sees the same next card.
-        served = []
-        new_done = cards_done = 0
-        for _ in range(100):
-            take_new = serve_new_next(
-                new_done=new_done, cards_done=cards_done,
-                new_left=20 - new_done, review_left=80 - (cards_done - new_done),
-            )
-            served.append('N' if take_new else 'R')
-            new_done += int(take_new)
-            cards_done += 1
-        self.assertEqual(served.count('N'), 20)
-        gaps = [index for index, value in enumerate(served) if value == 'N']
-        spacing = [second - first for first, second in zip(gaps, gaps[1:])]
-        self.assertTrue(all(4 <= step <= 6 for step in spacing), spacing)
-
-    def test_the_setting_round_trips_and_rejects_nonsense(self):
-        response = self.client.patch('/api/settings/', {'new_card_order': 'before_reviews'}, format='json')
+    def test_the_setting_round_trips_and_rejects_out_of_range_values(self):
+        response = self.client.patch('/api/settings/', {'new_card_pacing': 0.3}, format='json')
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data['new_card_order'], 'before_reviews')
-        bad = self.client.patch('/api/settings/', {'new_card_order': 'whenever'}, format='json')
-        self.assertEqual(bad.status_code, 400)
+        self.assertEqual(response.data['new_card_pacing'], 0.3)
+        for bad_value in (-0.1, 1.4, 'often'):
+            with self.subTest(value=bad_value):
+                bad = self.client.patch('/api/settings/', {'new_card_pacing': bad_value}, format='json')
+                self.assertEqual(bad.status_code, 400)
+
+    def test_placement_is_random_but_reproduces_exactly(self):
+        for index in range(40):
+            self._due_card(f'relearn{index}', CardSchedule.State.RELEARNING)
+        for index in range(10):
+            self._due_card(f'fresh{index}', CardSchedule.State.NEW)
+        first = self._queue_shape()
+        self.assertEqual(first, self._queue_shape(), 'the same day must rebuild the same queue')
+        # Not the rigid every-Nth pattern the first version produced.
+        positions = [index for index, value in enumerate(first) if value == 'N']
+        spacing = {second - first_ for first_, second in zip(positions, positions[1:])}
+        self.assertGreater(len(spacing), 1, f'spacing looks mechanical: {first}')
+
+    def test_a_mid_pacing_still_reaches_new_cards_within_the_session(self):
+        # 0.25 biases new cards towards the end without exiling them there.
+        self.profile.new_card_pacing = 0.25
+        self.profile.save(update_fields=['new_card_pacing'])
+        for index in range(80):
+            self._due_card(f'relearn{index}', CardSchedule.State.RELEARNING)
+        for index in range(20):
+            self._due_card(f'fresh{index}', CardSchedule.State.NEW)
+        shape = self._queue_shape()
+        self.assertEqual(shape.count('N'), 20)
+        first = shape.index('N')
+        self.assertGreater(first, 5, f'0.25 should not front-load new cards: {shape[:40]}')
+        self.assertLess(first, 80, f'0.25 must still reach a new card mid-session: {shape[:90]}')
+
+    def _queue_shape(self):
+        from learning.services.queues import study_queue
+        cards = Flashcard.objects.filter(pool__user=self.user, suspended=False).select_related('pool', 'schedule')
+        queue = study_queue(cards, user=self.user, profile=self.profile)
+        return ''.join('N' if card.schedule.state == CardSchedule.State.NEW else 'R' for card in queue)
 
 
 class ProviderCheckWorkerTests(ApiTransactionBase):
@@ -2609,3 +2625,94 @@ class AdapterPricingTests(TestCase):
         )
         self.assertGreater(usage.total_price, 0)
         adapters.forget_cached_adapters()
+
+
+class NewCardPacingTests(TestCase):
+    """The pacing knob and the distribution behind it.
+
+    The same reference values are asserted by NewCardMixTest on Android, which
+    is what keeps the offline scheduler's port honest.
+    """
+
+    SEED_DAY = datetime(2026, 8, 15).date()
+    # Produced by this implementation and pinned in both languages.
+    REFERENCE_SEED = 18424242787504944040
+    REFERENCE_U01 = [0.922681251064, 0.73884333187, 0.072663933575, 0.336564240699, 0.867232398224]
+    REFERENCE_HALF = [0.072663933575, 0.336564240699, 0.726881393643, 0.73884333187, 0.867232398224, 0.922681251064]
+    REFERENCE_QUARTER = [0.417291592495, 0.69559426129, 0.899127299577, 0.904032657615, 0.953626910525, 0.973532748527]
+
+    def test_the_seed_and_hash_are_portable_and_pinned(self):
+        from learning.services.queues import _u01, day_seed
+        seed = day_seed('creator', self.SEED_DAY)
+        self.assertEqual(seed, self.REFERENCE_SEED)
+        self.assertEqual([round(_u01(seed, index), 12) for index in range(5)], self.REFERENCE_U01)
+
+    def test_pinned_offsets_match_the_reference(self):
+        from learning.services.queues import new_card_offsets
+        seed = day_seed_for(self.SEED_DAY)
+        self.assertEqual([round(x, 12) for x in new_card_offsets(6, pacing=0.5, seed=seed)], self.REFERENCE_HALF)
+        self.assertEqual([round(x, 12) for x in new_card_offsets(6, pacing=0.25, seed=seed)], self.REFERENCE_QUARTER)
+
+    def test_the_mean_position_is_one_minus_the_pacing(self):
+        from learning.services.queues import new_card_offsets
+        for pacing in (0.1, 0.25, 0.5, 0.75, 0.9):
+            values = new_card_offsets(20000, pacing=pacing, seed=99)
+            self.assertAlmostEqual(sum(values) / len(values), 1 - pacing, places=2, msg=f'pacing={pacing}')
+
+    def test_the_extremes_are_exact_promises_not_approximations(self):
+        from learning.services.queues import new_card_offsets
+        self.assertEqual(set(new_card_offsets(50, pacing=0.0, seed=7)), {1.0})
+        self.assertEqual(set(new_card_offsets(50, pacing=1.0, seed=7)), {0.0})
+
+    def test_offsets_are_sorted_bounded_and_reproducible(self):
+        from learning.services.queues import new_card_offsets
+        for pacing in (0.0, 0.2, 0.5, 0.8, 1.0):
+            values = new_card_offsets(40, pacing=pacing, seed=4242)
+            self.assertEqual(values, sorted(values))
+            self.assertTrue(all(0.0 <= value <= 1.0 for value in values))
+            self.assertEqual(values, new_card_offsets(40, pacing=pacing, seed=4242))
+
+    def test_a_different_day_reshuffles_the_placement(self):
+        from learning.services.queues import day_seed, new_card_offsets
+        today = new_card_offsets(30, pacing=0.5, seed=day_seed('creator', self.SEED_DAY))
+        tomorrow = new_card_offsets(30, pacing=0.5, seed=day_seed('creator', self.SEED_DAY + timedelta(days=1)))
+        self.assertNotEqual(today, tomorrow)
+
+    def test_pacing_is_monotone_new_cards_arrive_earlier_as_it_rises(self):
+        from learning.services.queues import new_card_offsets
+        means = [sum(new_card_offsets(4000, pacing=p / 10, seed=5)) / 4000 for p in range(1, 10)]
+        self.assertEqual(means, sorted(means, reverse=True))
+
+    def test_out_of_range_pacing_is_clamped_rather_than_raising(self):
+        from learning.services.queues import new_card_offsets
+        self.assertEqual(set(new_card_offsets(5, pacing=-3.0, seed=1)), {1.0})
+        self.assertEqual(set(new_card_offsets(5, pacing=9.0, seed=1)), {0.0})
+        self.assertEqual(new_card_offsets(0, pacing=0.5, seed=1), [])
+
+    def test_the_serving_rule_follows_the_offsets(self):
+        from learning.services.queues import serve_new_next
+
+        def run(offsets, new_total, review_total):
+            served, new_done, cards_done = [], 0, 0
+            for _ in range(new_total + review_total):
+                take = serve_new_next(
+                    new_done=new_done, cards_done=cards_done,
+                    new_left=new_total - new_done,
+                    review_left=review_total - (cards_done - new_done),
+                    offsets=offsets,
+                )
+                served.append('N' if take else 'R')
+                new_done += int(take)
+                cards_done += 1
+            return ''.join(served)
+
+        self.assertEqual(run([1.0] * 3, 3, 7), 'RRRRRRRNNN')
+        self.assertEqual(run([0.0] * 3, 3, 7), 'NNNRRRRRRR')
+        # A card whose offset is halfway through the day is served halfway.
+        halfway = run([0.5], 1, 9)
+        self.assertEqual(halfway.index('N'), 4, halfway)
+
+
+def day_seed_for(day):
+    from learning.services.queues import day_seed
+    return day_seed('creator', day)

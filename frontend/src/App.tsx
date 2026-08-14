@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   BookOpen, BrainCircuit, Check, ChevronDown, ChevronLeft, ChevronRight, CircleDollarSign,
@@ -9,7 +9,7 @@ import {
   Image as ImageIcon, ImagePlus, Upload, PencilLine
 } from 'lucide-react'
 import { api, apiBlob, apiPage, ApiError, list, setToken, token } from './api'
-import type { AccentColor, Analytics, BulkJob, Card, Direction, JudgeResult, ModelCatalogResponse, ModelOption, NewCardOrder, Overview, Pool, ProviderCheck, ProviderUpdateInfo, Settings, Theme } from './types'
+import type { AccentColor, Analytics, BulkJob, Card, Direction, JudgeResult, ModelCatalogResponse, ModelOption, Overview, Pool, ProviderCheck, ProviderUpdateInfo, Settings, Theme } from './types'
 
 type Page = 'home'|'study'|'library'|'analytics'|'settings'|'notfound'
 type Toast = {message:string; kind:'success'|'error'}
@@ -40,7 +40,7 @@ const emptySettings:Settings = {
   image_model:'', has_image_token:false, show_card_images:true,
   show_images_term_to_definition:true, show_images_definition_to_term:true, image_animations:['mist','ripple','drift'],
   image_animation_durations:{}, image_prefetch_count:2,
-  daily_new_limit:20, new_card_order:'mixed', learning_steps_minutes:[1,10], relearning_steps_minutes:[10], graduating_interval_days:1,
+  daily_new_limit:20, new_card_pacing:0.5, learning_steps_minutes:[1,10], relearning_steps_minutes:[10], graduating_interval_days:1,
   easy_interval_days:4, easy_bonus:1.3, hard_multiplier:1.2, lapse_multiplier:.5, minimum_ease:1.3,
   term_to_definition_easy_seconds:12, term_to_definition_good_seconds:35,
   definition_to_term_easy_seconds:6, definition_to_term_good_seconds:18,
@@ -932,7 +932,11 @@ function SettingsPage({value,isAdmin,onSaved,notify}:{value:Settings;isAdmin:boo
     <label>Prefetch upcoming images<NumberField min={0} max={10} round value={form.image_prefetch_count} set={v=>patch('image_prefetch_count',v)}/><small>How many of the next flashcards’ images load in advance during study. 0 disables prefetching.</small></label></div></section>
     <ProviderKeysSection models={models} providers={providers} isAdmin={admin} status={form.token_status||{}} staged={providerTokens} updating={updatingProvider} stage={checkStage} onUpdate={provider=>void updateProvider(provider)} onRemove={provider=>stageToken(provider,'')} onUndo={unstageToken}/>
     <section className="panel settings-section"><div className="settings-heading"><div className="settings-icon"><BookOpen/></div><div><h2>Study experience</h2><p>Control prompt direction, appearance, and new-card load.</p></div></div><div className="settings-grid three"><div className="settings-field">Task types<div className="check-list">{([['term_to_definition','Word → definition'],['definition_to_term','Definition → word'],['term_to_sentence','Word → sentence']] as [Direction,string][]).map(([id,label])=><label className="check-row" key={id}><input type="checkbox" checked={form.study_directions.includes(id)} onChange={e=>{const next=e.target.checked?(['term_to_definition','definition_to_term','term_to_sentence'] as Direction[]).filter(d=>d===id||form.study_directions.includes(d)):form.study_directions.filter(d=>d!==id);if(next.length)patch('study_directions',next)}}/><span>{label}</span></label>)}</div><small>Due cards rotate through the enabled task types. At least one stays on.</small></div><label>Appearance<select value={form.theme} onChange={e=>patch('theme',e.target.value as Theme)}><option value="dark">Dark</option><option value="light">Light</option><option value="system">System</option></select></label><label><span className="field-label">Daily new cards<HelpTip label="Daily new cards">{SCHEDULER_HELP.daily_new_limit}</HelpTip></span><NumberField min={0} max={500} round value={form.daily_new_limit} set={v=>patch('daily_new_limit',v)}/></label>
-<div className="settings-field new-order-setting"><span className="field-label">New card order<HelpTip label="New card order">{SCHEDULER_HELP.new_card_order}</HelpTip></span><div className="segmented" role="radiogroup" aria-label="New card order">{([['before_reviews','Before reviews','New words open the session'],['mixed','Mix with reviews','Spread evenly through the day'],['after_reviews','After reviews','Only once the queue is clear']] as [NewCardOrder,string,string][]).map(([id,label,hint])=><button type="button" key={id} role="radio" aria-checked={form.new_card_order===id} className={form.new_card_order===id?'active':''} onClick={()=>patch('new_card_order',id)}><b>{label}</b><small>{hint}</small></button>)}</div><small>{form.new_card_order==='after_reviews'?'A long relearning queue will delay every new word until you finish it.':form.new_card_order==='before_reviews'?'You meet the whole day’s new words first, then review.':'New words arrive steadily even on days with a big review backlog.'}</small></div></div><div className="accent-setting"><div><Palette size={18}/><span><b>Interface color</b><small>Choose the accent used for actions, charts, and highlights.</small></span></div><AccentPicker value={form.accent_color} set={v=>patch('accent_color',v)}/></div></section>
+<div className="settings-field pacing-setting"><span className="field-label">New card pacing<HelpTip label="New card pacing">{SCHEDULER_HELP.new_card_pacing}</HelpTip></span>
+        <input type="range" min={0} max={100} step={5} value={Math.round(form.new_card_pacing*100)} aria-label="New card pacing"
+          aria-valuetext={pacingSummary(form.new_card_pacing)} onChange={e=>patch('new_card_pacing',Number(e.target.value)/100)}/>
+        <div className="pacing-scale"><span>After reviews</span><span>Evenly mixed</span><span>Before reviews</span></div>
+        <small><b>{Math.round(form.new_card_pacing*100)}%</b> · {pacingSummary(form.new_card_pacing)}</small></div></div><div className="accent-setting"><div><Palette size={18}/><span><b>Interface color</b><small>Choose the accent used for actions, charts, and highlights.</small></span></div><AccentPicker value={form.accent_color} set={v=>patch('accent_color',v)}/></div></section>
     <section className="panel settings-section"><div className="settings-heading"><div className="settings-icon"><Clock3/></div><div><h2 className="field-label">Automatic review timing<HelpTip label="Automatic review timing">{SCHEDULER_HELP.timing}</HelpTip></h2><p>Correctness is primary; response time chooses Easy, Good, or Hard automatically.</p></div></div><div className="timing-settings"><TimingBand title="Word → definition" description="Writing a free-form meaning takes longer." easy={form.term_to_definition_easy_seconds} good={form.term_to_definition_good_seconds} setEasy={v=>patch('term_to_definition_easy_seconds',v)} setGood={v=>patch('term_to_definition_good_seconds',v)}/><TimingBand title="Definition → word" description="Recalling and typing one term should be faster." easy={form.definition_to_term_easy_seconds} good={form.definition_to_term_good_seconds} setEasy={v=>patch('definition_to_term_easy_seconds',v)} setGood={v=>patch('definition_to_term_good_seconds',v)}/><TimingBand title="Word → sentence" description="Composing an original sentence takes the longest." easy={form.term_to_sentence_easy_seconds} good={form.term_to_sentence_good_seconds} setEasy={v=>patch('term_to_sentence_easy_seconds',v)} setGood={v=>patch('term_to_sentence_good_seconds',v)}/></div></section>
     <section className="panel settings-section"><button className="advanced-toggle" onClick={()=>setAdvanced(!advanced)}><div><Gauge/><span><b>Scheduler tuning</b><small>Anki-inspired learning and review parameters</small></span></div>{advanced?<ChevronDown/>:<ChevronRight/>}</button>{advanced&&<div className="settings-grid advanced">
       <label><span className="field-label">Learning steps (minutes)<HelpTip label="Learning steps (minutes)">{SCHEDULER_HELP.learning_steps}</HelpTip></span><input value={form.learning_steps_minutes.join(', ')} onChange={e=>patch('learning_steps_minutes',numbers(e.target.value))}/></label>
@@ -1001,7 +1005,7 @@ function numbers(s:string){return s.split(/[ ,]+/).map(Number).filter(x=>Number.
 // number does to your own queue rather than restating its name.
 const SCHEDULER_HELP:Record<string,React.ReactNode>={
   daily_new_limit:<>The most brand-new words LexiLoop will introduce in one day, counted across every pool. Reviews of words you already started are never capped by this — only first sightings are.</>,
-  new_card_order:<>Where new words sit in today’s queue. <b>Mix with reviews</b> spreads them evenly through the session, so a large review backlog can never push every new word to the very end.</>,
+  new_card_pacing:<>How early new words appear in today’s queue. The percentage is the <b>average position</b> of a new word: at <b>50%</b> they are scattered evenly through the session, at <b>0%</b> they all wait until every review is done, at <b>100%</b> they all come first. In between, positions are drawn at random around that average, so the spacing varies naturally instead of landing on every Nth card — but the draw is fixed for the day, so a reload or a second device shows the same queue.</>,
   learning_steps:<>The short delays a brand-new word goes through before it joins the day-scale schedule. <b>1, 10</b> means: answer it correctly and you see it again about a minute later, then ten minutes after that. Clearing the last step graduates the card.</>,
   relearning_steps:<>The same short delays for a word you had already learned and just got wrong. It drops out of the day-scale schedule and must clear these steps again before it goes back to days.</>,
   graduating_interval:<>The first gap in <b>days</b> a word gets when it finishes its learning steps normally. With 1, a freshly graduated word returns tomorrow.</>,
@@ -1015,23 +1019,51 @@ const SCHEDULER_HELP:Record<string,React.ReactNode>={
   timing:<>Correctness is decided first; how long you took then picks Easy, Good, or Hard automatically. Set the bands to your own comfortable pace on this device.</>,
 }
 
+// One sentence for the current pacing value. The number is the mean position of
+// a new card in the day, so the copy describes where they land, not how many.
+function pacingSummary(value:number){
+  const percent=Math.round(value*100)
+  if(percent<=0)return 'Every new word waits until all reviews are done'
+  if(percent>=100)return 'Every new word comes before any review'
+  if(percent<25)return 'New words appear late in the session, after most reviews'
+  if(percent<45)return 'New words lean towards the second half of the session'
+  if(percent<=55)return 'New words are scattered evenly across the session'
+  if(percent<=75)return 'New words lean towards the first half of the session'
+  return 'New words appear early, ahead of most reviews'
+}
+
+const HELP_GAP=8, HELP_EDGE=12
 function HelpTip({label,children}:{label:string;children:React.ReactNode}){
   const [open,setOpen]=useState(false)
-  const [box,setBox]=useState<{top:number;left:number;width:number;caret:number;above:boolean}|null>(null)
+  const [box,setBox]=useState<{top:number;left:number}|null>(null)
   const anchor=useRef<HTMLButtonElement>(null)
+  const panel=useRef<HTMLDivElement>(null)
   const id=useId()
-  // Hover opens it on a pointer device; tap toggles it on a touch screen. The
-  // popup is portalled so a panel with its own scrolling never clips it.
+  // Positioning happens entirely in layout pixels. body carries `zoom` (1.2 on
+  // desktop, 1.05 on small phones), so getBoundingClientRect and innerWidth are
+  // in zoomed viewport pixels while offsetWidth and the inline top/left this
+  // writes are not. Dividing the viewport figures by the zoom is what keeps the
+  // bubble under its own icon; without it the popup landed 20% further down,
+  // on top of the icon, and thrashed pointerenter/pointerleave forever.
   const place=useCallback(()=>{
-    const element=anchor.current
-    if(!element)return
-    const rect=element.getBoundingClientRect()
-    const width=Math.min(300,window.innerWidth-24)
-    const left=Math.max(12,Math.min(rect.left+rect.width/2-width/2,window.innerWidth-width-12))
-    const above=rect.top>window.innerHeight-rect.bottom&&rect.top>200
-    setBox({top:above?rect.top-10:rect.bottom+10,left,width,caret:rect.left+rect.width/2-left,above})
+    const button=anchor.current, bubble=panel.current
+    if(!button||!bubble)return
+    const zoom=Number.parseFloat(getComputedStyle(document.body).zoom||'1')||1
+    const rect=button.getBoundingClientRect()
+    const iconLeft=rect.left/zoom, iconTop=rect.top/zoom
+    const iconWidth=rect.width/zoom, iconHeight=rect.height/zoom
+    const viewWidth=window.innerWidth/zoom, viewHeight=window.innerHeight/zoom
+    const width=bubble.offsetWidth, height=bubble.offsetHeight
+    const left=Math.max(HELP_EDGE,Math.min(iconLeft+iconWidth/2-width/2,viewWidth-width-HELP_EDGE))
+    // Directly under the question mark; flipped above only when it truly does
+    // not fit, and clamped so it can never leave the viewport either way.
+    const below=iconTop+iconHeight+HELP_GAP
+    const above=iconTop-HELP_GAP-height
+    const fitsBelow=below+height<=viewHeight-HELP_EDGE
+    const top=fitsBelow||above<HELP_EDGE?Math.min(below,Math.max(HELP_EDGE,viewHeight-height-HELP_EDGE)):above
+    setBox({top,left})
   },[])
-  const show=()=>{place();setOpen(true)}
+  useLayoutEffect(()=>{if(open)place()},[open,place])
   useEffect(()=>{
     if(!open)return
     const close=(event:Event)=>{if(!anchor.current?.contains(event.target as Node))setOpen(false)}
@@ -1047,18 +1079,22 @@ function HelpTip({label,children}:{label:string;children:React.ReactNode}){
       document.removeEventListener('keydown',key)
     }
   },[open,place])
+  const hoverable=()=>typeof matchMedia==='function'&&matchMedia('(hover: hover)').matches
   return <>
     <button type="button" ref={anchor} className={`help-tip ${open?'open':''}`} aria-label={`What is “${label}”?`}
       aria-expanded={open} aria-describedby={open?id:undefined}
-      onClick={event=>{event.preventDefault();open?setOpen(false):show()}}
-      onPointerEnter={event=>{if(event.pointerType==='mouse')show()}}
+      // The tip lives inside a <label>; without this the browser hands focus to
+      // that label's input and a text caret starts blinking there instead.
+      onMouseDown={event=>event.preventDefault()}
+      onClick={event=>{event.preventDefault();event.stopPropagation();if(!hoverable())setOpen(value=>!value);else setOpen(true)}}
+      onPointerEnter={event=>{if(event.pointerType==='mouse')setOpen(true)}}
       onPointerLeave={event=>{if(event.pointerType==='mouse')setOpen(false)}}
-      onFocus={show} onBlur={()=>setOpen(false)}>
+      onFocus={()=>setOpen(true)} onBlur={()=>setOpen(false)}>
       <CircleHelp size={15} aria-hidden="true"/>
     </button>
-    {open&&box&&createPortal(
-      <div id={id} role="tooltip" className={`help-pop ${box.above?'above':''}`}
-        style={{top:box.top,left:box.left,width:box.width,['--caret' as string]:`${box.caret}px`}}>
+    {open&&createPortal(
+      <div id={id} role="tooltip" ref={panel} className="help-pop"
+        style={box?{top:box.top,left:box.left}:{top:0,left:0,visibility:'hidden'}}>
         <b>{label}</b><p>{children}</p>
       </div>, document.body)}
   </>

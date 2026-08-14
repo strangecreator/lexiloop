@@ -882,8 +882,10 @@ html:has(.sidebar.open),body:has(.sidebar.open){overflow:hidden}
 /* v1.27 inline help for the scheduler settings. Anki's vocabulary needs a
    gloss, but a settings page full of paragraphs is worse than one with none —
    so each label carries a quiet question mark that opens on hover (pointer),
-   on focus (keyboard) and on tap (touch). The bubble is portalled to <body>
-   and positioned in script, so a scrolling panel never clips it. */
+   on focus (keyboard) and on tap (touch). The bubble is portalled to <body>,
+   positioned from a measured height in script, and pointer-transparent: it can
+   never become the hover target, so it cannot thrash enter/leave against the
+   icon it belongs to. */
 .field-label{display:flex;align-items:center;gap:6px;min-width:0}
 .settings-grid label>.field-label,.settings-grid .settings-field>.field-label{flex-direction:row}
 .settings-heading h2.field-label{gap:7px}
@@ -891,36 +893,24 @@ html:has(.sidebar.open),body:has(.sidebar.open){overflow:hidden}
   background:transparent;color:var(--muted2);cursor:help;transition:color .15s,background .15s}
 .help-tip:hover,.help-tip:focus-visible,.help-tip.open{color:var(--primary2);background:var(--primary-bg)}
 .help-tip:focus-visible{outline:2px solid var(--primary);outline-offset:1px}
-.help-pop{position:fixed;z-index:80;padding:13px 15px;border:1px solid var(--border2);border-radius:13px;
-  background:var(--surface2);box-shadow:var(--shadow);animation:help-in .13s ease-out}
-.help-pop.above{transform:translateY(-100%)}
+.help-pop{position:fixed;z-index:80;box-sizing:border-box;width:min(320px,calc(100vw - 24px));
+  padding:13px 15px;border:1px solid var(--border2);border-radius:13px;
+  background:var(--surface2);box-shadow:var(--shadow);pointer-events:none;animation:help-in .13s ease-out}
 .help-pop b{display:block;font:700 12px 'Manrope';color:var(--text);margin-bottom:5px}
 .help-pop p{margin:0;font-size:12px;line-height:1.6;color:var(--muted);font-weight:400}
 .help-pop p b{display:inline;font-size:inherit;margin:0;color:var(--text)}
-/* The caret tracks the icon horizontally even after the bubble is clamped to
-   the viewport edge, so it always points at the control it explains. */
-.help-pop::before{content:'';position:absolute;left:var(--caret);margin-left:-6px;width:11px;height:11px;
-  background:var(--surface2);border:1px solid var(--border2);transform:rotate(45deg)}
-.help-pop:not(.above)::before{top:-6px;border-right:0;border-bottom:0}
-.help-pop.above::before{bottom:-6px;border-left:0;border-top:0}
-@keyframes help-in{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:translateY(0)}}
-.help-pop.above{animation-name:help-in-above}
-@keyframes help-in-above{from{opacity:0;transform:translateY(calc(-100% + 3px))}to{opacity:1;transform:translateY(-100%)}}
+@keyframes help-in{from{opacity:0}to{opacity:1}}
 @media(prefers-reduced-motion:reduce){.help-pop{animation:none}}
 
-/* v1.27 new-card order: three mutually exclusive choices read better as a
-   segmented control than as a select, because the trade-off is the point. */
-.new-order-setting{grid-column:1/-1;margin-top:2px}
-.segmented{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}
-.segmented button{display:flex;flex-direction:column;align-items:flex-start;gap:3px;text-align:left;
-  padding:11px 13px;border:1px solid var(--border);border-radius:12px;background:var(--surface2);min-height:44px}
-.segmented button:hover{border-color:var(--border2)}
-.segmented button.active{border-color:var(--primary);background:var(--primary-bg)}
-.segmented b{font-size:12px;color:var(--text)}
-.segmented small{font-size:10px;color:var(--muted2);font-weight:500;line-height:1.4}
-.segmented button.active small{color:var(--muted)}
-.segmented button:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
-@media(max-width:700px){.segmented{grid-template-columns:1fr}}
+/* v1.27 new-card pacing: one continuous control replaces the old three-way
+   choice, because the three stops were just its 0 / 50 / 100 points. The scale
+   labels carry the meaning so the raw percentage never has to. */
+.pacing-setting{grid-column:1/-1;margin-top:2px}
+.pacing-setting input[type=range]{width:100%;margin:2px 0 0}
+.pacing-scale{display:flex;justify-content:space-between;gap:8px;color:var(--muted2);font-size:10px;font-weight:600}
+.pacing-scale span:nth-child(2){color:var(--muted)}
+.pacing-setting>small{font-weight:400}
+.pacing-setting>small b{color:var(--text);font-size:11px}
 
 /* v1.27 provider maintenance is staff-only; the badge marks the section for
    the accounts that do have it. */

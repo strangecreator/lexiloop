@@ -612,7 +612,7 @@ class NextCardView(APIView):
             })
 
         # study_queue already returns the queue in serving order, including the
-        # placement of new cards chosen by the profile's new_card_order.
+        # placement of new cards chosen by the profile's new_card_pacing.
         ordered = study_queue(base_cards, user=request.user, profile=profile, now=now)
         if not ordered:
             return Response({

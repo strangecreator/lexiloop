@@ -32,7 +32,6 @@ export interface ProviderCheck {
 export type Theme = 'dark' | 'light' | 'system'
 export type AccentColor = 'violet' | 'indigo' | 'blue' | 'teal' | 'emerald' | 'rose' | 'orange'
 export type Direction = 'term_to_definition' | 'definition_to_term' | 'term_to_sentence'
-export type NewCardOrder = 'mixed' | 'after_reviews' | 'before_reviews'
 
 export interface Settings {
   theme: Theme; accent_color: AccentColor; study_directions: Direction[]; generation_model: string; has_generation_token: boolean;
@@ -43,7 +42,7 @@ export interface Settings {
   judge_acceptance_score: number;
   sentence_judge_model: string; has_sentence_token: boolean; sentence_acceptance_score: number;
   show_images_term_to_sentence: boolean;
-  daily_new_limit: number; new_card_order: NewCardOrder;
+  daily_new_limit: number; new_card_pacing: number;
   learning_steps_minutes: number[]; relearning_steps_minutes: number[];
   graduating_interval_days: number; easy_interval_days: number; easy_bonus: number;
   hard_multiplier: number; lapse_multiplier: number; minimum_ease: number;

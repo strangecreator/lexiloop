@@ -183,7 +183,7 @@ class ProfileSerializer(serializers.ModelSerializer):
             'provider_tokens', 'token_status',
             'judge_acceptance_score',
             'sentence_judge_model', 'has_sentence_token', 'sentence_acceptance_score',
-            'daily_new_limit', 'new_card_order', 'learning_steps_minutes', 'relearning_steps_minutes',
+            'daily_new_limit', 'new_card_pacing', 'learning_steps_minutes', 'relearning_steps_minutes',
             'graduating_interval_days', 'easy_interval_days', 'easy_bonus', 'hard_multiplier',
             'lapse_multiplier', 'minimum_ease',
             'term_to_definition_easy_seconds', 'term_to_definition_good_seconds',

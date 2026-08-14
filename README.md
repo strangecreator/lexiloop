@@ -2,7 +2,7 @@
 
 LexiLoop is a Django + React platform for building and retaining English vocabulary. It combines one-field AI card creation, semantic answer judging, durable high-volume generation, server-side pagination, PostgreSQL storage, HTTPS deployment, and an Anki-inspired review scheduler with a polished responsive interface.
 
-Version **1.27.0** turns provider upkeep into a maintenance tool and fixes the queue starving new cards. **Check API** is now staff-only and rewrites the provider’s connection code: it asks the most capable non-flagship model the account can reach to write the Python module that talks to that provider, screens it, runs it sandboxed, and activates it only after it has answered live calls at least as well as the module in use. New cards are now mixed evenly into the day’s queue instead of waiting behind every review, and every scheduler setting explains itself in place.
+Version **1.27.1** turns provider upkeep into a maintenance tool and fixes the queue starving new cards. **Check API** is now staff-only and rewrites the provider’s connection code: it asks the most capable non-flagship model the account can reach to write the Python module that talks to that provider, screens it, runs it sandboxed, and activates it only after it has answered live calls at least as well as the module in use. New cards are now mixed evenly into the day’s queue instead of waiting behind every review, and every scheduler setting explains itself in place.
 
 ## Highlights
 
@@ -22,7 +22,7 @@ Version **1.27.0** turns provider upkeep into a maintenance tool and fixes the q
 - Dedicated routes: `/overview`, `/study`, `/library`, `/analytics`, `/settings`, `/auth`, `/register`, and `/admin/`.
 - Unknown URLs return a custom LexiLoop 404 page instead of the SPA shell.
 
-## v1.27.0 changes
+## v1.27.1 changes
 
 ### Check API rewrites the connection code
 
@@ -37,15 +37,17 @@ Version **1.27.0** turns provider upkeep into a maintenance tool and fixes the q
 
 ### New cards stop waiting behind the review queue
 
-- New setting **New card order**: *Mix with reviews* (new default), *Show before reviews*, or *Show after reviews* — the previous behaviour.
-- Mixed spreads the day's new cards evenly through the session, so 20 new among 500 relearning cards now arrive about every 26th card instead of only after the last review.
-- The decision is derived from today's counts alone, so it survives a reload, a second device, and a queue that grows when a card lapses.
-- The Android offline scheduler carries the same port, matching the server bit for bit including its rounding.
+- New setting **New card pacing**: one slider from 0% to 100%. The value is the *mean position* of a new card in the day — 0% keeps every new card behind the reviews (the old behaviour), 100% puts them all in front, 50% (the default) scatters them evenly.
+- Positions come from the power-function family (a Beta with one unit shape), so intermediate values do something genuinely useful rather than interpolating between two extremes: 25% clusters new cards late but can still surface one at any point, 75% mirrors that towards the front. Closed-form, so there is no incomplete-beta inverse to keep in step across two languages.
+- Placement is random-looking but *derived*: a splitmix64 hash of (learner, day, index). The queue is rebuilt on every request and must not reshuffle underneath the learner, so the same day always produces the same order — across reloads, devices, and a queue that grows when a card lapses.
+- 20 new among 500 relearning cards now surface throughout the session instead of only after the last review.
+- The Android offline scheduler carries the same port, verified bit for bit against pinned reference values in both test suites.
 
 ### Every scheduler setting explains itself
 
 - A question-mark next to each Anki-derived label opens a plain-English explanation: hover or keyboard focus on desktop, tap on mobile and in the app.
-- Covers learning and relearning steps, graduating and easy intervals, easy bonus, hard and lapse multipliers, minimum ease, the daily new limit, new card order, both accept scores, and the review timing bands.
+- Covers learning and relearning steps, graduating and easy intervals, easy bonus, hard and lapse multipliers, minimum ease, the daily new limit, new card pacing, both accept scores, and the review timing bands.
+- The bubble is positioned from a measured height in layout pixels. `body` carries `zoom`, so `getBoundingClientRect` is in zoomed viewport pixels while an inline `top` is not: mixing the two placed the bubble 20% further down, on top of its own icon, where it thrashed `pointerenter`/`pointerleave` forever and never became visible. It is also pointer-transparent, so it can never become the hover target whatever its position.
 
 ## v1.26.2 changes
 
